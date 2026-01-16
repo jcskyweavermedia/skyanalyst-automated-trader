@@ -1,0 +1,24 @@
+/*
+ * ================================================================================
+ * Trading Panel 2.0 - Server
+ * ================================================================================
+ * 
+ * Copyright © 2025 SkyAnalyst AI LLC
+ * All Rights Reserved
+ * 
+ * Website: www.skyanalyst.ai
+ * 
+ * PROPRIETARY AND CONFIDENTIAL
+ * 
+ * This software and associated documentation files (the "Software") are the 
+ * proprietary property of SkyAnalyst AI LLC. Unauthorized copying, distribution,
+ * modification, or use of this Software, via any medium, is strictly prohibited
+ * without the express written permission of SkyAnalyst AI LLC.
+ * 
+ * The Software is provided "as is", without warranty of any kind, express or
+ * implied, including but not limited to the warranties of merchantability,
+ * fitness for a particular purpose and noninfringement.
+ * 
+ * For licensing inquiries, please contact: www.skyanalyst.ai
+ * ================================================================================
+ */

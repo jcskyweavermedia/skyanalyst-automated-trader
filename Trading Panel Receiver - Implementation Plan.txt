@@ -1,0 +1,205 @@
+Trading Panel Receiver - Implementation Plan (REVISED)
+I've analyzed the requirements and created a comprehensive phased plan to transform the receiver into a DUAL-MODE bot:
+- Can receive trades via HTTP listener (Copy/Reverse mode)
+- Can also take manual trades via on-screen Trading Panel UI
+
+PHASE 1: Analysis & Preparation
+What to Keep:
+✅ Risk management system (GetDynamicRiskPercent, CanTrade, CheckHardStops)
+✅ MultiPositionPartialTPManager (for 3-position TP management)
+✅ Position tracking and trailing SL logic
+✅ Logging system
+✅ Core bot parameters (Account, Balance, Risk %, Daily Limits)
+✅ TradingPanel UI class (KEEP - for manual trading on receiver)
+✅ Styles class (KEEP - needed for UI)
+✅ DefaultSLMode parameter (KEEP - for UI)
+✅ ExecuteManualTrade method (KEEP - for UI-initiated trades)
+What to Remove:
+❌ SendJsonMessage method (receiver doesn't broadcast)
+❌ Port broadcasting parameters (Port1-4, PortsActive)
+❌ JSON SL Format parameter (not needed for receiver)
+What to Add:
+➕ HTTP Listener (System.Net.HttpListener)
+➕ JSON parsing for incoming trades
+➕ Trade mode logic (Copy vs Reverse)
+➕ SL calculation from received data
+➕ SL offset application
+➕ ExecuteReceivedTrade method (NEW - for HTTP-received trades)
+
+PHASE 2: Core Setup & Configuration
+New Enums:
+csharp
+public enum TradeMode
+{
+    Copy,      // Execute same direction as received
+    Reverse    // Execute opposite direction
+}
+public enum SLInputMode
+{
+    Pips,      // Receive SL as pip distance
+    Price      // Receive SL as price level
+}
+New Parameters:
+csharp
+[Parameter("Listening Port", Group = "Receiver", DefaultValue = 8301)]
+public int ListeningPort { get; set; }
+[Parameter("Trade Mode", Group = "Receiver", DefaultValue = TradeMode.Copy)]
+public TradeMode TradeModeParam { get; set; }
+[Parameter("SL Input Mode", Group = "Receiver", DefaultValue = SLInputMode.Pips)]
+public SLInputMode SLInputModeParam { get; set; }
+[Parameter("SL Offset (pips)", Group = "Receiver", DefaultValue = 0.0)]
+public double SLOffsetPips { get; set; }
+Cleanup:
+✅ KEEP TradingPanel class (for manual trading UI)
+✅ KEEP Styles class (needed for UI)
+✅ KEEP ExecuteManualTrade method (for UI trades)
+✅ KEEP DefaultSLMode parameter (for UI)
+❌ Remove SendJsonMessage and GetActivePorts methods (receiver doesn't broadcast)
+❌ Remove Port1-4, PortsActive, JsonSLFormat parameters (no broadcasting)
+
+PHASE 3: HTTP Listener Implementation
+Add to OnStart:
+csharp
+private HttpListener _httpListener;
+protected override void OnStart()
+{
+    // ... existing initialization ...
+    
+    // Start HTTP Listener
+    _httpListener = new HttpListener();
+    _httpListener.Prefixes.Add($"http://localhost:{ListeningPort}/newtrade/");
+    _httpListener.Start();
+    _httpListener.BeginGetContext(ListenerCallback, _httpListener);
+    
+    PrintLocal($"Receiver listening on port {ListeningPort}");
+}
+Listener Callback:
+csharp
+private void ListenerCallback(IAsyncResult ar)
+{
+    if (_httpListener == null || !_httpListener.IsListening) return;
+    
+    HttpListenerContext ctx = _httpListener.EndGetContext(ar);
+    _httpListener.BeginGetContext(ListenerCallback, _httpListener);
+    
+    string body = ReadRequestBody(ctx);
+    BeginInvokeOnMainThread(() => ProcessIncomingTrade(body));
+}
+JSON Parsing:
+csharp
+private void ProcessIncomingTrade(string json)
+{
+    var message = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+    
+    string action = message["action"].ToString();
+    string symbol = message["symbol"].ToString();
+    
+    if (action == "Close All Positions")
+    {
+        CloseAllPositions();
+        return;
+    }
+    
+    // Extract SL (pips or price)
+    double? slPips = message.ContainsKey("sl_pips") ? (double?)message["sl_pips"] : null;
+    double? slPrice = message.ContainsKey("sl_price") ? (double?)message["sl_price"] : null;
+    
+    TradeType tradeType = action == "Buy" ? TradeType.Buy : TradeType.Sell;
+    
+    ExecuteReceivedTrade(tradeType, slPips, slPrice, symbol);
+}
+PHASE 4: Trade Execution Logic
+ExecuteReceivedTrade Method:
+csharp
+private void ExecuteReceivedTrade(TradeType receivedType, double? slPips, double? slPrice, string symbol)
+{
+    if (!CanTrade()) return;
+    
+    // 1. Determine actual trade direction (Copy or Reverse)
+    TradeType actualType = (TradeModeParam == TradeMode.Copy) 
+        ? receivedType 
+        : (receivedType == TradeType.Buy ? TradeType.Sell : TradeType.Buy);
+    
+    // 2. Calculate SL distance based on input mode
+    double finalSlPips = 0;
+    
+    if (SLInputModeParam == SLInputMode.Pips && slPips.HasValue)
+    {
+        finalSlPips = slPips.Value;
+    }
+    else if (SLInputModeParam == SLInputMode.Price && slPrice.HasValue)
+    {
+        double currentPrice = (actualType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
+        double priceDiff = Math.Abs(currentPrice - slPrice.Value);
+        finalSlPips = priceDiff / Symbol.PipSize;
+    }
+    
+    // 3. Apply SL Offset
+    finalSlPips += SLOffsetPips;
+    
+    // 4. Calculate position size using receiver's risk settings
+    double fr = GetDynamicRiskPercent();
+    double riskAmt = Account.Balance * (fr / 100.0);
+    double volumeUnits = riskAmt / (finalSlPips * Symbol.PipValue);
+    volumeUnits = Symbol.NormalizeVolumeInUnits(volumeUnits, RoundingMode.ToNearest);
+    
+    // 5. Execute 3 partial positions
+    double pos1 = volumeUnits * (TP1Percent / 100.0);
+    double pos2 = volumeUnits * (TP2Percent / 100.0);
+    double pos3 = volumeUnits * (TP3Percent / 100.0);
+    
+    // Normalize and execute...
+    ExecuteMarketOrderAsync(actualType, symbol, pos1, "TP1Position", finalSlPips, finalSlPips * TP1R);
+    ExecuteMarketOrderAsync(actualType, symbol, pos2, "TP2Position", finalSlPips, finalSlPips * TP2R);
+    ExecuteMarketOrderAsync(actualType, symbol, pos3, "TP3Position", finalSlPips, finalSlPips * TP3R);
+    
+    PrintLocal($"Received trade executed: {actualType}, SL={finalSlPips:F1} pips");
+}
+PHASE 5: Close Positions Handler
+Already Exists - Just Verify:
+csharp
+public void CloseAllPositions()
+{
+    foreach (var pos in Positions)
+        if (pos.SymbolName == SymbolName)
+            ClosePositionAsync(pos);
+    
+    PrintLocal("All positions closed via received command");
+}
+PHASE 6: Testing & Cleanup
+OnStop Cleanup:
+csharp
+protected override void OnStop()
+{
+    if (_httpListener != null && _httpListener.IsListening)
+    {
+        _httpListener.Stop();
+        _httpListener.Close();
+    }
+    
+    WriteLogsToFile();
+    PrintLocal("Receiver stopped.");
+}
+Remove:
+❌ SendJsonMessage and GetActivePorts methods
+❌ Port1-4, PortsActive, JsonSLFormat parameters
+✅ KEEP all UI-related code (TradingPanel, Styles classes)
+✅ KEEP ExecuteManualTrade method
+
+Summary of Features:
+Feature	Implementation
+Receive Trades	HTTP Listener on configurable port
+Manual Trades	On-screen Trading Panel UI (KEPT)
+Own Risk Settings	Uses receiver's GetDynamicRiskPercent()
+Copy/Reverse Mode	TradeMode enum switches direction (HTTP trades only)
+Pips/Price SL	SLInputMode enum determines parsing (HTTP trades)
+SL Offset	Added to calculated SL distance (HTTP trades)
+Close Positions	Handles "Close All Positions" action (HTTP)
+Dual Execution	ExecuteManualTrade (UI) + ExecuteReceivedTrade (HTTP)
+Single Port	One ListeningPort parameter
+
+REVISED GOAL: Create a DUAL-MODE receiver bot that:
+1. Has on-screen Trading Panel for manual trades (like original)
+2. Also listens for HTTP trades and executes them in Copy/Reverse mode
+3. Both modes use the same risk management and TP system
+4. Receiver does NOT broadcast (no SendJsonMessage)
