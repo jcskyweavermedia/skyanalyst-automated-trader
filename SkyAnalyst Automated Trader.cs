@@ -77,6 +77,7 @@ namespace cAlgo.Robots
     public enum SymbolFilterOption
     {
         US30_Pepperstone,
+        US500_Pepperstone,
         NAS100_Pepperstone,
         XAUUSD_Pepperstone,
         XAGUSD_Pepperstone,
