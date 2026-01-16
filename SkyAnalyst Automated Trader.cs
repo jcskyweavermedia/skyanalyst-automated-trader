@@ -2043,9 +2043,11 @@ namespace cAlgo.Robots
             {
                 Text = "Close\nAll",
                 Margin = "10 0 10 0",
+                MinHeight = 66,
                 Style = closeStyle,
                 HorizontalContentAlignment = HorizontalAlignment.Center,
                 VerticalContentAlignment = VerticalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
                 Padding = "10 10 10 10"
             };
             closeAllButton.Click += (args) => _bot.CloseAllPositions();
@@ -2086,13 +2088,14 @@ namespace cAlgo.Robots
             
             main.AddChild(modeStack);
 
-            var slStack = new StackPanel
+            var slPriceStack = new StackPanel
             {
                 Orientation = Orientation.Vertical,
                 Margin = "0 0 10 0"
             };
+            
             var slLabel = new TextBlock { Text = "SL (pips)" };
-            slStack.AddChild(slLabel);
+            slPriceStack.AddChild(slLabel);
 
             slTextBox = new TextBox
             {
@@ -2102,16 +2105,14 @@ namespace cAlgo.Robots
                 Margin = "0 5 0 0"
             };
             slTextBox.TextChanged += (args) => UpdateValues();
-            slStack.AddChild(slTextBox);
-            main.AddChild(slStack);
+            slPriceStack.AddChild(slTextBox);
 
-            var priceStack = new StackPanel
-            {
-                Orientation = Orientation.Vertical,
-                Margin = "0 0 10 0"
+            var priceLabel = new TextBlock 
+            { 
+                Text = "SL Price",
+                Margin = "0 8 0 0"
             };
-            var priceLabel = new TextBlock { Text = "SL Price" };
-            priceStack.AddChild(priceLabel);
+            slPriceStack.AddChild(priceLabel);
 
             priceTextBox = new TextBox
             {
@@ -2122,20 +2123,9 @@ namespace cAlgo.Robots
                 IsEnabled = false
             };
             priceTextBox.TextChanged += (args) => UpdateValues();
-            priceStack.AddChild(priceTextBox);
+            slPriceStack.AddChild(priceTextBox);
             
-            var statusToggleButton = new Button
-            {
-                Text = "Status",
-                Style = Styles.CreateLightGreyButtonStyle(),
-                Margin = "0 5 0 0",
-                Width = 60,
-                Height = 25
-            };
-            statusToggleButton.Click += (args) => _bot.ToggleStatusCard();
-            priceStack.AddChild(statusToggleButton);
-            
-            main.AddChild(priceStack);
+            main.AddChild(slPriceStack);
 
             var qtyRiskStack = new StackPanel
             {
@@ -2163,6 +2153,18 @@ namespace cAlgo.Robots
             qtyRiskStack.AddChild(qtyTextBlock);
             qtyRiskStack.AddChild(estimatedRiskTextBlock);
             qtyRiskStack.AddChild(riskPercentTextBlock);
+            
+            var statusToggleButton = new Button
+            {
+                Text = "Status",
+                Style = Styles.CreateLightGreyButtonStyle(),
+                Margin = "0 5 0 0",
+                Width = 60,
+                Height = 25
+            };
+            statusToggleButton.Click += (args) => _bot.ToggleStatusCard();
+            qtyRiskStack.AddChild(statusToggleButton);
+            
             main.AddChild(qtyRiskStack);
 
             var buySellStack = new StackPanel
@@ -2297,10 +2299,11 @@ namespace cAlgo.Robots
                 style.Set(ControlProperty.ForegroundColor, Color.White, ControlState.DarkTheme);
                 style.Set(ControlProperty.ForegroundColor, Color.White, ControlState.LightTheme);
 
-                style.Set(ControlProperty.BorderColor, Color.Red, ControlState.DarkTheme);
-                style.Set(ControlProperty.BorderColor, Color.Red, ControlState.LightTheme);
-                style.Set(ControlProperty.BorderThickness, 2, ControlState.DarkTheme);
-                style.Set(ControlProperty.BorderThickness, 2, ControlState.LightTheme);
+                var borderColor = (mainColor == Color.Red || mainColor == Color.FromHex("#058000")) ? Color.Red : Color.Transparent;
+                style.Set(ControlProperty.BorderColor, borderColor, ControlState.DarkTheme);
+                style.Set(ControlProperty.BorderColor, borderColor, ControlState.LightTheme);
+                style.Set(ControlProperty.BorderThickness, borderColor == Color.Red ? 2 : 0, ControlState.DarkTheme);
+                style.Set(ControlProperty.BorderThickness, borderColor == Color.Red ? 2 : 0, ControlState.LightTheme);
 
                 style.Set(ControlProperty.BackgroundColor, mainColor, ControlState.DarkTheme | ControlState.Hover);
                 style.Set(ControlProperty.BackgroundColor, mainColor, ControlState.LightTheme | ControlState.Hover);
