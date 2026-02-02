@@ -442,14 +442,32 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
     public class NewsTradePanelWWebhook : Robot
     {
-        [Parameter("Bot Mode", DefaultValue = BotModeType.Auto)]
+        // ------------------------ "SkyAnalyst Automated Trader" ------------------------
+        [Parameter("Bot Mode", Group = "SkyAnalyst Automated Trader", DefaultValue = BotModeType.Auto)]
         public BotModeType BotMode { get; set; }
 
-        [Parameter("Status Card", DefaultValue = StatusCardVisibility.Displayed)]
+        [Parameter("Status Card", Group = "SkyAnalyst Automated Trader", DefaultValue = StatusCardVisibility.Displayed)]
         public StatusCardVisibility StatusCardVisibility { get; set; }
 
-        [Parameter("Account", DefaultValue = "Demo Account")]
+        [Parameter("Account", Group = "SkyAnalyst Automated Trader", DefaultValue = "Demo Account")]
         public string AccountName { get; set; }
+
+        // ------------------------ "Trading Bridge Settings" ------------------------
+        [Parameter("Listening Port", Group = "Trading Bridge Settings", DefaultValue = 8050)]
+        public int WebhookPort { get; set; }
+
+        [Parameter("Port Enabled", Group = "Trading Bridge Settings", DefaultValue = true)]
+        public bool WebhookEnabled { get; set; }
+
+        [Parameter("Symbol", Group = "Trading Bridge Settings", DefaultValue = SymbolFilterOption.Accept_Any)]
+        public SymbolFilterOption SymbolFilter { get; set; }
+
+        [Parameter("SL Zone Preference", Group = "Trading Bridge Settings", DefaultValue = SLZonePreference.Wide)]
+        public SLZonePreference SLZonePreference { get; set; }
+
+        [Parameter("TP Zone Preference", Group = "Trading Bridge Settings", DefaultValue = TPZonePreference.Full)]
+        public TPZonePreference TPZonePreference { get; set; }
+        // -----------------------------------------------------------------------
 
         // ------------------------ "Risk Mode" ------------------------
         [Parameter("Risk Mode", Group = "Risk Mode", DefaultValue = RiskModeType.Fixed)]
@@ -466,7 +484,7 @@ namespace cAlgo.Robots
         public double FixedRiskDollar { get; set; }
 
         // ------------------------ "Dynamic Risk Settings" ------------------------
-        [Parameter("Starting Balance", Group = "Dynamic Risk Settings", DefaultValue = 1000)]
+        [Parameter("Starting Balance", Group = "Dynamic Risk Settings", DefaultValue = 0)]
         public double StartingBalance { get; set; }
 
         [Parameter("Base Risk (%)", Group = "Dynamic Risk Settings", DefaultValue = 1.0)]
@@ -498,13 +516,13 @@ namespace cAlgo.Robots
         [Parameter("Max Daily Loss (%)", Group = "Risk Reduction on Drawdown", DefaultValue = 5.0)]
         public double MaxDailyLoss { get; set; }
 
-        [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 30.0)]
+        [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 50.0)]
         public double TP1Percent { get; set; }
 
         [Parameter("TP2 %", Group = "Trade Parameters", DefaultValue = 30.0)]
         public double TP2Percent { get; set; }
 
-        [Parameter("TP3 %", Group = "Trade Parameters", DefaultValue = 40.0)]
+        [Parameter("TP3 %", Group = "Trade Parameters", DefaultValue = 20.0)]
         public double TP3Percent { get; set; }
 
         [Parameter("TP1 R", Group = "Trade Parameters", DefaultValue = 1.0)]
@@ -534,8 +552,11 @@ namespace cAlgo.Robots
         [Parameter("Max Positive Trades/Day", Group = "Daily Limits", DefaultValue = 10)]
         public int MaxPositiveTradesDay { get; set; }
 
-        [Parameter("Max Negative Trades/Day", Group = "Daily Limits", DefaultValue = 10)]
+        [Parameter("Max Negative Trades/Day", Group = "Daily Limits", DefaultValue = 2)]
         public int MaxNegativeTradesDay { get; set; }
+
+        [Parameter("Max Active Trades", Group = "Daily Limits", DefaultValue = 2)]
+        public int MaxActiveTrades { get; set; }
 
         // ------------------------ "Broadcast Trade Settings" ------------------------
         [Parameter("Ports Active", Group = "Broadcast Trade Settings", DefaultValue = 0, MinValue = 0, MaxValue = 4)]
@@ -555,29 +576,6 @@ namespace cAlgo.Robots
 
         [Parameter("JSON SL Format", Group = "Broadcast Trade Settings", DefaultValue = JSONSLFormat.Pips)]
         public JSONSLFormat JsonSLFormat { get; set; }
-        // -----------------------------------------------------------------------
-
-        // ------------------------ "Webhook Settings" ------------------------
-        [Parameter("Webhook Port", Group = "Webhook Settings", DefaultValue = 8050)]
-        public int WebhookPort { get; set; }
-
-        [Parameter("Webhook Enabled", Group = "Webhook Settings", DefaultValue = true)]
-        public bool WebhookEnabled { get; set; }
-
-        [Parameter("Broker Match Validation", Group = "Webhook Settings", DefaultValue = true)]
-        public bool BrokerMatchValidation { get; set; }
-
-        [Parameter("Expected Broker Name", Group = "Webhook Settings", DefaultValue = "Pepperstone")]
-        public string ExpectedBrokerName { get; set; }
-
-        [Parameter("Symbol Filter", Group = "Webhook Settings", DefaultValue = SymbolFilterOption.US30_Pepperstone)]
-        public SymbolFilterOption SymbolFilter { get; set; }
-
-        [Parameter("SL Zone Preference", Group = "Webhook Settings", DefaultValue = SLZonePreference.Wide)]
-        public SLZonePreference SLZonePreference { get; set; }
-
-        [Parameter("TP Zone Preference", Group = "Webhook Settings", DefaultValue = TPZonePreference.Full)]
-        public TPZonePreference TPZonePreference { get; set; }
         // -----------------------------------------------------------------------
 
         // ------------------------ "Logging" ------------------------
@@ -608,6 +606,10 @@ namespace cAlgo.Robots
         private HttpListener _webhookListener;
         private StatusCard _statusCard;
         private bool _webhookServerError = false;
+        private int _webhookStartAttempts = 0;
+        private const int MAX_WEBHOOK_ATTEMPTS = 3;
+        private double _actualStartingBalance;
+        private double _effectiveStartingBalance;
         private Dictionary<string, string> _symbolMappings = new Dictionary<string, string>
         {
             { "US30-Pepperstone", "US30" },
@@ -641,6 +643,21 @@ namespace cAlgo.Robots
 
             var nowLocalEcu = TimeZoneInfo.ConvertTimeFromUtc(Server.TimeInUtc, _ecuadorTimeZone);
 
+            // Always capture actual starting balance (for Fixed Risk mode drawdown calculations)
+            _actualStartingBalance = Account.Balance;
+
+            // Set effective starting balance for Dynamic Risk scaling
+            if (StartingBalance <= 0)
+            {
+                _effectiveStartingBalance = Account.Balance;
+                PrintLocal($"Starting Balance auto-detected: ${_effectiveStartingBalance:F2}");
+            }
+            else
+            {
+                _effectiveStartingBalance = StartingBalance;
+                PrintLocal($"Using configured Starting Balance: ${_effectiveStartingBalance:F2}");
+            }
+
             PrintLocal($"Starting Bot for Account='{AccountName}'...");
             PrintLocal($"Bot Mode: {BotMode}");
             if (BotMode == BotModeType.Manual_Only)
@@ -653,16 +670,19 @@ namespace cAlgo.Robots
                     PrintLocal($"Risk Mode: Fixed {FixedRiskPercent:F2}% per trade");
                 else
                     PrintLocal($"Risk Mode: Fixed ${FixedRiskDollar:F2} per trade");
+                
+                PrintLocal($"Max Drawdown will be calculated from actual starting balance: ${_actualStartingBalance:F2}");
             }
             else
             {
-                PrintLocal($"Risk Mode: Dynamic | Starting Balance: ${StartingBalance:F2}, Current: ${Account.Balance:F2}");
+                PrintLocal($"Risk Mode: Dynamic | Starting Balance: ${_effectiveStartingBalance:F2}, Current: ${Account.Balance:F2}");
                 PrintLocal($"  Base Risk: {BaseRiskPercent:F2}%, Max Risk: {MaxRiskPercent:F2}%");
                 PrintLocal($"  Growth Scaling: +{RiskIncreasePerStep:F0}% per {EquityGrowthStep:F1}% growth");
                 PrintLocal($"  Drawdown Reduction: -{RiskReductionPerStep:F0}% per {DrawdownStep:F1}% DD");
                 PrintLocal($"  Compounding: {(RiskCompounding ? "Enabled" : "Disabled")}");
                 double currentRisk = GetCurrentRiskPercent();
                 PrintLocal($"  Current Effective Risk: {currentRisk:F2}%");
+                PrintLocal($"Max Drawdown will be calculated from configured starting balance: ${_effectiveStartingBalance:F2}");
             }
             
             PrintLocal($"Risk Gates: Max Drawdown={MaxDrawdown:F1}%, Max Daily Loss={MaxDailyLoss:F1}%");
@@ -722,20 +742,7 @@ namespace cAlgo.Robots
 
             if (WebhookEnabled && BotMode == BotModeType.Auto)
             {
-                try
-                {
-                    _webhookListener = new HttpListener();
-                    _webhookListener.Prefixes.Add($"http://localhost:{WebhookPort}/webhook/");
-                    _webhookListener.Start();
-                    _webhookListener.BeginGetContext(WebhookListenerCallback, _webhookListener);
-                    _webhookServerError = false;
-                    PrintLocal($"[WEBHOOK-SERVER] Started successfully on port {WebhookPort}");
-                }
-                catch (Exception ex)
-                {
-                    _webhookServerError = true;
-                    PrintLocal($"[WEBHOOK-SERVER] Failed to start: {ex.Message}");
-                }
+                TryStartWebhookServer();
             }
             else if (BotMode == BotModeType.Manual_Only)
             {
@@ -772,6 +779,13 @@ namespace cAlgo.Robots
 
         protected override void OnTick()
         {
+            // Retry webhook start if needed
+            if (WebhookEnabled && BotMode == BotModeType.Auto && _webhookServerError && 
+                _webhookStartAttempts > 0 && _webhookStartAttempts < MAX_WEBHOOK_ATTEMPTS)
+            {
+                TryStartWebhookServer();
+            }
+            
             CheckDayChange();
             CheckHardStops();
             _tradeManager.CheckPositions();
@@ -781,15 +795,86 @@ namespace cAlgo.Robots
 
         protected override void OnStop()
         {
-            if (_webhookListener != null && _webhookListener.IsListening)
+            try
             {
-                _webhookListener.Stop();
-                _webhookListener.Close();
-                PrintLocal("[WEBHOOK-SERVER] Stopped");
+                if (_webhookListener != null)
+                {
+                    try
+                    {
+                        if (_webhookListener.IsListening)
+                        {
+                            _webhookListener.Stop();
+                        }
+                        _webhookListener.Close();
+                        ((IDisposable)_webhookListener).Dispose();
+                        PrintLocal("[WEBHOOK-SERVER] Stopped");
+                    }
+                    catch (Exception ex)
+                    {
+                        PrintLocal($"[WEBHOOK-SERVER] Error during shutdown: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _webhookListener = null;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                PrintLocal($"[WEBHOOK-SERVER] Critical error in OnStop: {ex.Message}");
             }
 
             WriteLogsToFile();
             PrintLocal("Bot stopped.");
+        }
+
+        private void TryStartWebhookServer()
+        {
+            try
+            {
+                _webhookListener = new HttpListener();
+                _webhookListener.Prefixes.Add($"http://localhost:{WebhookPort}/webhook/");
+                _webhookListener.Start();
+                _webhookListener.BeginGetContext(WebhookListenerCallback, _webhookListener);
+                _webhookServerError = false;
+                _webhookStartAttempts = 0;
+                PrintLocal($"[WEBHOOK-SERVER] Started successfully on port {WebhookPort}");
+                
+                if (_statusCard != null)
+                {
+                    _statusCard.RefreshPortStatus(_webhookServerError);
+                }
+            }
+            catch (HttpListenerException ex)
+            {
+                _webhookServerError = true;
+                _webhookStartAttempts++;
+                
+                if (_webhookStartAttempts < MAX_WEBHOOK_ATTEMPTS)
+                {
+                    PrintLocal($"[WEBHOOK-SERVER] Port {WebhookPort} in use, will retry (attempt {_webhookStartAttempts}/{MAX_WEBHOOK_ATTEMPTS})");
+                }
+                else
+                {
+                    PrintLocal($"[WEBHOOK-SERVER] Failed after {MAX_WEBHOOK_ATTEMPTS} attempts: {ex.Message}");
+                }
+                
+                if (_statusCard != null)
+                {
+                    _statusCard.RefreshPortStatus(_webhookServerError);
+                }
+            }
+            catch (Exception ex)
+            {
+                _webhookServerError = true;
+                _webhookStartAttempts = MAX_WEBHOOK_ATTEMPTS;
+                PrintLocal($"[WEBHOOK-SERVER] Failed to start: {ex.Message}");
+                
+                if (_statusCard != null)
+                {
+                    _statusCard.RefreshPortStatus(_webhookServerError);
+                }
+            }
         }
 
         private void WebhookListenerCallback(IAsyncResult ar)
@@ -881,15 +966,11 @@ namespace cAlgo.Robots
                 return false;
             }
 
-            if (BrokerMatchValidation)
+            int activeTradeCount = CountActiveTrades();
+            if (activeTradeCount >= MaxActiveTrades)
             {
-                string webhookBroker = ExtractBrokerName(webhook.Instrument);
-                if (!string.IsNullOrEmpty(webhookBroker) && 
-                    !webhookBroker.Equals(ExpectedBrokerName, StringComparison.OrdinalIgnoreCase))
-                {
-                    errorMessage = $"Broker mismatch: Expected '{ExpectedBrokerName}', Got '{webhookBroker}'";
-                    return false;
-                }
+                errorMessage = $"Max active trades limit reached: {activeTradeCount}/{MaxActiveTrades}";
+                return false;
             }
 
             if (!PassesSymbolFilter(webhook.Instrument))
@@ -913,17 +994,6 @@ namespace cAlgo.Robots
             }
 
             return true;
-        }
-
-        private string ExtractBrokerName(string instrument)
-        {
-            if (string.IsNullOrEmpty(instrument))
-                return null;
-
-            if (instrument.Contains("-"))
-                return instrument.Split('-')[1];
-
-            return null;
         }
 
         private bool PassesSymbolFilter(string webhookInstrument)
@@ -1168,21 +1238,29 @@ namespace cAlgo.Robots
             }
         }
 
+        private double GetDrawdownBaseBalance()
+        {
+            // Fixed Risk: Use actual starting balance
+            // Dynamic Risk: Use configured starting balance (for scaling consistency)
+            return (RiskMode == RiskModeType.Fixed) ? _actualStartingBalance : _effectiveStartingBalance;
+        }
+
         public bool CanTrade()
         {
             if (_stopTrading) return false;
 
             double eq = Account.Equity;
             
-            // Max drawdown check
-            double maxDrawdownThreshold = StartingBalance * (1.0 - (MaxDrawdown / 100.0));
+            // Max drawdown check - use appropriate base balance
+            double baseBalance = GetDrawdownBaseBalance();
+            double maxDrawdownThreshold = baseBalance * (1.0 - (MaxDrawdown / 100.0));
             if (eq <= maxDrawdownThreshold)
             {
-                PrintLocal($"Max Drawdown hit: Equity={eq:F2}, Threshold={maxDrawdownThreshold:F2} (-{MaxDrawdown}%)");
+                PrintLocal($"Max Drawdown hit: Equity={eq:F2}, Threshold={maxDrawdownThreshold:F2} (-{MaxDrawdown}%) from base ${baseBalance:F2}");
                 return false;
             }
 
-            // Daily loss check
+            // Daily loss check (already correct - uses _dailyStartBalance)
             double dailyLoss = _dailyStartBalance - eq;
             double dailyLossPercent = (dailyLoss / _dailyStartBalance) * 100.0;
             if (dailyLossPercent >= MaxDailyLoss)
@@ -1519,17 +1597,18 @@ namespace cAlgo.Robots
 
             double eq = Account.Equity;
             
-            // Max drawdown hard stop
-            double maxDrawdownThreshold = StartingBalance * (1.0 - (MaxDrawdown / 100.0));
+            // Max drawdown hard stop - use appropriate base balance
+            double baseBalance = GetDrawdownBaseBalance();
+            double maxDrawdownThreshold = baseBalance * (1.0 - (MaxDrawdown / 100.0));
             if (eq <= maxDrawdownThreshold)
             {
                 CloseAllPositions();
                 _stopTrading = true;
-                PrintLocal($"HARD STOP: Max Drawdown -{MaxDrawdown}% hit | Equity={eq:F2}, Threshold={maxDrawdownThreshold:F2}");
+                PrintLocal($"HARD STOP: Max Drawdown -{MaxDrawdown}% hit | Equity={eq:F2}, Threshold={maxDrawdownThreshold:F2} from base ${baseBalance:F2}");
                 return;
             }
 
-            // Daily loss hard stop
+            // Daily loss hard stop (already correct)
             double dailyLoss = _dailyStartBalance - eq;
             double dailyLossPercent = (dailyLoss / _dailyStartBalance) * 100.0;
             if (dailyLossPercent >= MaxDailyLoss)
@@ -1820,6 +1899,22 @@ namespace cAlgo.Robots
             _webhookTradeToPositions[tradeId] = positionIds;
         }
 
+        private int CountActiveTrades()
+        {
+            int count = 0;
+            foreach (var kvp in _webhookTradeToPositions.ToList())
+            {
+                // Check if ANY position from this trade is still open
+                bool hasOpenPositions = kvp.Value.Any(posId => 
+                    Positions.Any(p => p.Id == posId && p.Quantity > 0)
+                );
+                
+                if (hasOpenPositions)
+                    count++;
+            }
+            return count;
+        }
+
         // ==================== NEW RISK CALCULATION SYSTEM ====================
         
         public double CalculateRiskAmount(double slDistancePips)
@@ -1849,8 +1944,8 @@ namespace cAlgo.Robots
         private double CalculateDynamicRiskAmount(double slDistancePips)
         {
             double currentBalance = Account.Balance;
-            double balanceDiff = currentBalance - StartingBalance;
-            double balanceDiffPercent = (balanceDiff / StartingBalance) * 100.0;
+            double balanceDiff = currentBalance - _effectiveStartingBalance;
+            double balanceDiffPercent = (balanceDiff / _effectiveStartingBalance) * 100.0;
             
             double effectiveRisk = BaseRiskPercent;
             
@@ -1870,7 +1965,7 @@ namespace cAlgo.Robots
                 effectiveRisk = MaxRiskPercent;
             
             // Calculate risk amount
-            double baseBalance = RiskCompounding ? currentBalance : StartingBalance;
+            double baseBalance = RiskCompounding ? currentBalance : _effectiveStartingBalance;
             return baseBalance * (effectiveRisk / 100.0);
         }
 
@@ -1912,8 +2007,8 @@ namespace cAlgo.Robots
             {
                 // Dynamic mode - calculate current effective risk
                 double currentBalance = Account.Balance;
-                double balanceDiff = currentBalance - StartingBalance;
-                double balanceDiffPercent = (balanceDiff / StartingBalance) * 100.0;
+                double balanceDiff = currentBalance - _effectiveStartingBalance;
+                double balanceDiffPercent = (balanceDiff / _effectiveStartingBalance) * 100.0;
                 
                 double effectiveRisk = BaseRiskPercent;
                 
@@ -1946,7 +2041,8 @@ namespace cAlgo.Robots
                 if (_logs.Count == 0) return;
 
                 var nowLocalEcu = TimeZoneInfo.ConvertTimeFromUtc(Server.TimeInUtc, _ecuadorTimeZone);
-                var fileName = $"{AccountName}_BotLog_{nowLocalEcu:yyyy-MM-dd_HH-mm-ss}.log";
+                string instanceId = RunningMode.ToString().Substring(Math.Max(0, RunningMode.ToString().Length - 4));
+                var fileName = $"{AccountName}_{SymbolName}_{nowLocalEcu:yyyy-MM-dd}_{instanceId}.log";
                 var fullPath = Path.Combine(LogFolder, fileName);
 
                 Directory.CreateDirectory(LogFolder);
@@ -2412,6 +2508,7 @@ namespace cAlgo.Robots
             public double InitialSL { get; set; }
             public double RDistanceInPips { get; set; }
             public bool TrailingActivated { get; set; }
+            public string TradeGroupId { get; set; }
         }
 
         private readonly NewsTradePanelWWebhook _robot;
@@ -2425,7 +2522,7 @@ namespace cAlgo.Robots
         private bool TSL_Enabled;
         private double TSL_R_Trigger;
         private double TSL_R_Distance;
-        private bool _globalTrailing;
+        private HashSet<string> _trailingActivatedGroups = new HashSet<string>();
 
         public MultiPositionPartialTPManager(
             NewsTradePanelWWebhook robot,
@@ -2443,7 +2540,6 @@ namespace cAlgo.Robots
             TSL_Enabled = tslEnabled;
             TSL_R_Trigger = tslRTrigger;
             TSL_R_Distance = tslRDistance;
-            _globalTrailing = false;
         }
 
         public void CheckPositions()
@@ -2459,7 +2555,7 @@ namespace cAlgo.Robots
                     continue;
                 }
 
-                if (!_globalTrailing && TSL_Enabled)
+                if (!_trailingActivatedGroups.Contains(mp.TradeGroupId) && TSL_Enabled)
                 {
                     double curPrice = (mp.TradeType == TradeType.Buy) ? _robot.Symbol.Bid : _robot.Symbol.Ask;
                     double gainedPips = (mp.TradeType == TradeType.Buy)
@@ -2469,12 +2565,12 @@ namespace cAlgo.Robots
                     double cR = gainedPips / mp.RDistanceInPips;
                     if (cR >= TSL_R_Trigger)
                     {
-                        _globalTrailing = true;
-                        _robot.Print($"Global trailing => triggered at {TSL_R_Trigger}R");
+                        _trailingActivatedGroups.Add(mp.TradeGroupId);
+                        _robot.Print($"TSL triggered for trade group '{mp.TradeGroupId}' at {TSL_R_Trigger}R");
                     }
                 }
 
-                if (_globalTrailing && TSL_Enabled)
+                if (_trailingActivatedGroups.Contains(mp.TradeGroupId) && TSL_Enabled)
                 {
                     double cp = (mp.TradeType == TradeType.Buy) ? _robot.Symbol.Bid : _robot.Symbol.Ask;
                     double desiredDist = mp.RDistanceInPips * TSL_R_Distance;
@@ -2506,7 +2602,8 @@ namespace cAlgo.Robots
         {
             var newly = _robot.Positions
                 .Where(p => p.SymbolName == _robot.SymbolName
-                    && (p.Label == "TP1Position" || p.Label == "TP2Position" || p.Label == "TP3Position")
+                    && (p.Label == "TP1Position" || p.Label == "TP2Position" || p.Label == "TP3Position" ||
+                        p.Label.Contains("_TP1") || p.Label.Contains("_TP2") || p.Label.Contains("_TP3"))
                     && p.Quantity > 0
                     && !_mpos.Any(x => x.Id == p.Id))
                 .ToList();
@@ -2514,6 +2611,16 @@ namespace cAlgo.Robots
             foreach (var pos in newly)
             {
                 if (!pos.StopLoss.HasValue) continue;
+                
+                // Extract trade group ID from label
+                string tradeGroupId = "MANUAL";
+                if (pos.Label.Contains("_TP"))
+                {
+                    int underscoreIndex = pos.Label.IndexOf("_TP");
+                    if (underscoreIndex > 0)
+                        tradeGroupId = pos.Label.Substring(0, underscoreIndex);
+                }
+                
                 var mp = new ManagedPosition
                 {
                     Id = pos.Id,
@@ -2521,7 +2628,8 @@ namespace cAlgo.Robots
                     EntryPrice = pos.EntryPrice,
                     InitialSL = pos.StopLoss.Value,
                     RDistanceInPips = Math.Abs(pos.EntryPrice - pos.StopLoss.Value) / _robot.Symbol.PipSize,
-                    TrailingActivated = false
+                    TrailingActivated = false,
+                    TradeGroupId = tradeGroupId
                 };
                 _mpos.Add(mp);
             }

@@ -146,6 +146,158 @@ namespace cAlgo.Robots
 
             return style;
         }
+
+        public static Style CreateStatusCardStyle()
+        {
+            var style = new Style();
+            style.Set(ControlProperty.CornerRadius, 5);
+            style.Set(ControlProperty.BackgroundColor, Color.FromArgb(217, 41, 41, 41), ControlState.DarkTheme);
+            style.Set(ControlProperty.BackgroundColor, Color.FromArgb(230, 255, 255, 255), ControlState.LightTheme);
+            style.Set(ControlProperty.BorderColor, Color.FromHex("#3C3C3C"), ControlState.DarkTheme);
+            style.Set(ControlProperty.BorderColor, Color.FromHex("#C3C3C3"), ControlState.LightTheme);
+            style.Set(ControlProperty.BorderThickness, new Thickness(1));
+            style.Set(ControlProperty.Padding, new Thickness(0));
+            return style;
+        }
+    }
+
+    public class ReceiverStatusCard : CustomControl
+    {
+        private readonly NewsTradePanelWWebhook _bot;
+        private readonly string _accountName;
+        private readonly int _listeningPort;
+        private readonly InstrumentSource _instrumentSource;
+        private readonly TradeMode _tradeMode;
+        private bool _portError;
+        private string _currentInstrument;
+
+        private Border _mainBorder;
+        private StackPanel _contentPanel;
+
+        private TextBlock _accountText;
+        private TextBlock _instrumentSourceText;
+        private TextBlock _instrumentText;
+        private TextBlock _tradeModeText;
+        private TextBlock _portText;
+        private TextBlock _portStatusText;
+
+        public ReceiverStatusCard(
+            NewsTradePanelWWebhook bot,
+            string accountName,
+            int listeningPort,
+            InstrumentSource instrumentSource,
+            TradeMode tradeMode,
+            string currentInstrument,
+            bool portError)
+        {
+            _bot = bot;
+            _accountName = accountName;
+            _listeningPort = listeningPort;
+            _instrumentSource = instrumentSource;
+            _tradeMode = tradeMode;
+            _currentInstrument = currentInstrument;
+            _portError = portError;
+
+            AddChild(CreateCard());
+        }
+
+        private ControlBase CreateCard()
+        {
+            _mainBorder = new Border
+            {
+                Style = Styles.CreateStatusCardStyle()
+            };
+
+            _contentPanel = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Margin = new Thickness(15, 8, 15, 8)
+            };
+
+            _accountText = new TextBlock
+            {
+                Text = $"Account: {_accountName}",
+                FontSize = 9,
+                Margin = "0 0 0 2"
+            };
+            _contentPanel.AddChild(_accountText);
+
+            _tradeModeText = new TextBlock
+            {
+                Text = $"Trade Mode: {_tradeMode}",
+                FontSize = 9,
+                Margin = "0 2 0 2"
+            };
+            _contentPanel.AddChild(_tradeModeText);
+
+            _instrumentSourceText = new TextBlock
+            {
+                Text = $"Instrument Source: {_instrumentSource}",
+                FontSize = 9,
+                Margin = "0 2 0 2"
+            };
+            _contentPanel.AddChild(_instrumentSourceText);
+
+            _instrumentText = new TextBlock
+            {
+                Text = $"Instrument: {_currentInstrument}",
+                FontSize = 9,
+                Margin = "0 2 0 2"
+            };
+            _contentPanel.AddChild(_instrumentText);
+
+            _portText = new TextBlock
+            {
+                Text = $"Listening Port: {_listeningPort}",
+                FontSize = 9,
+                Margin = "0 2 0 2"
+            };
+            _contentPanel.AddChild(_portText);
+
+            _portStatusText = new TextBlock
+            {
+                Text = _portError ? "Port Status: ⚠️ Error" : "Port Status: ✓ OK",
+                FontSize = 9,
+                Margin = "0 2 0 0",
+                ForegroundColor = _portError ? Color.Red : Color.Green
+            };
+            _contentPanel.AddChild(_portStatusText);
+
+            _mainBorder.Child = _contentPanel;
+
+            return _mainBorder;
+        }
+
+        public void UpdateStatus(string currentInstrument, bool portError)
+        {
+            _currentInstrument = currentInstrument;
+            _portError = portError;
+
+            _accountText.Text = $"Account: {_accountName}";
+            _tradeModeText.Text = $"Trade Mode: {_tradeMode}";
+            _instrumentSourceText.Text = $"Instrument Source: {_instrumentSource}";
+            _instrumentText.Text = $"Instrument: {_currentInstrument}";
+            _portText.Text = $"Listening Port: {_listeningPort}";
+            _portStatusText.Text = _portError ? "Port Status: ⚠️ Error" : "Port Status: ✓ OK";
+            _portStatusText.ForegroundColor = _portError ? Color.Red : Color.Green;
+        }
+
+        public void RefreshPortStatus(bool portError)
+        {
+            _portError = portError;
+            _portStatusText.Text = _portError ? "Port Status: ⚠️ Error" : "Port Status: ✓ OK";
+            _portStatusText.ForegroundColor = _portError ? Color.Red : Color.Green;
+        }
+
+        public void Show()
+        {
+            IsVisible = true;
+        }
+
+        public void Hide()
+        {
+            IsVisible = false;
+        }
     }
 
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
@@ -258,6 +410,10 @@ namespace cAlgo.Robots
         private MultiPositionPartialTPManager _tradeManager;
         private List<string> _logs = new List<string>();
         private HttpListener _httpListener;
+        private ReceiverStatusCard _statusCard;
+        private bool _httpListenerError = false;
+        private int _httpListenerStartAttempts = 0;
+        private const int MAX_HTTP_LISTENER_ATTEMPTS = 3;
 
         protected override void OnStart()
         {
@@ -353,22 +509,40 @@ namespace cAlgo.Robots
             _tradeManager.CheckPositions();
 
             // Start HTTP Listener for receiving trades
-            try
+            TryStartHttpListener();
+
+            // Create and display Status Card
+            _statusCard = new ReceiverStatusCard(
+                this,
+                AccountName,
+                ListeningPort,
+                InstrumentSourceMode,
+                TradeModeParam,
+                SymbolName,
+                _httpListenerError
+            );
+
+            var statusBorder = new Border
             {
-                _httpListener = new HttpListener();
-                _httpListener.Prefixes.Add($"http://localhost:{ListeningPort}/newtrade/");
-                _httpListener.Start();
-                _httpListener.BeginGetContext(ListenerCallback, _httpListener);
-                PrintLocal($"HTTP Listener started successfully on port {ListeningPort}");
-            }
-            catch (Exception ex)
-            {
-                PrintLocal($"Failed to start HTTP Listener: {ex.Message}");
-            }
+                VerticalAlignment = VerticalAlignment.Top,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = "0 20 20 0"
+            };
+            statusBorder.Child = _statusCard;
+            Chart.AddControl(statusBorder);
+
+            _statusCard.RefreshPortStatus(_httpListenerError);
         }
 
         protected override void OnTick()
         {
+            // Retry HTTP listener start if needed
+            if (_httpListenerError && _httpListenerStartAttempts > 0 && 
+                _httpListenerStartAttempts < MAX_HTTP_LISTENER_ATTEMPTS)
+            {
+                TryStartHttpListener();
+            }
+            
             CheckDayChange();
             CheckHardStops();
             _tradeManager.CheckPositions();
@@ -376,14 +550,89 @@ namespace cAlgo.Robots
 
         protected override void OnStop()
         {
-            if (_httpListener != null && _httpListener.IsListening)
+            try
             {
-                _httpListener.Stop();
-                _httpListener.Close();
+                if (_httpListener != null)
+                {
+                    try
+                    {
+                        if (_httpListener.IsListening)
+                        {
+                            _httpListener.Stop();
+                        }
+                        _httpListener.Close();
+                        ((IDisposable)_httpListener).Dispose();
+                        PrintLocal("HTTP Listener stopped");
+                    }
+                    catch (Exception ex)
+                    {
+                        PrintLocal($"HTTP Listener error during shutdown: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _httpListener = null;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                PrintLocal($"Critical error in OnStop: {ex.Message}");
             }
             
             WriteLogsToFile();
             PrintLocal("Receiver stopped.");
+        }
+
+        // -----------------------------------------------------------------------
+        // HTTP Listener Start with Retry Logic
+        // -----------------------------------------------------------------------
+        private void TryStartHttpListener()
+        {
+            try
+            {
+                _httpListener = new HttpListener();
+                _httpListener.Prefixes.Add($"http://localhost:{ListeningPort}/newtrade/");
+                _httpListener.Start();
+                _httpListener.BeginGetContext(ListenerCallback, _httpListener);
+                _httpListenerError = false;
+                _httpListenerStartAttempts = 0;
+                PrintLocal($"HTTP Listener started successfully on port {ListeningPort}");
+                
+                if (_statusCard != null)
+                {
+                    _statusCard.RefreshPortStatus(_httpListenerError);
+                }
+            }
+            catch (HttpListenerException ex)
+            {
+                _httpListenerError = true;
+                _httpListenerStartAttempts++;
+                
+                if (_httpListenerStartAttempts < MAX_HTTP_LISTENER_ATTEMPTS)
+                {
+                    PrintLocal($"Port {ListeningPort} in use, will retry (attempt {_httpListenerStartAttempts}/{MAX_HTTP_LISTENER_ATTEMPTS})");
+                }
+                else
+                {
+                    PrintLocal($"Failed after {MAX_HTTP_LISTENER_ATTEMPTS} attempts: {ex.Message}");
+                }
+                
+                if (_statusCard != null)
+                {
+                    _statusCard.RefreshPortStatus(_httpListenerError);
+                }
+            }
+            catch (Exception ex)
+            {
+                _httpListenerError = true;
+                _httpListenerStartAttempts = MAX_HTTP_LISTENER_ATTEMPTS;
+                PrintLocal($"Failed to start HTTP Listener: {ex.Message}");
+                
+                if (_statusCard != null)
+                {
+                    _statusCard.RefreshPortStatus(_httpListenerError);
+                }
+            }
         }
 
         // -----------------------------------------------------------------------
