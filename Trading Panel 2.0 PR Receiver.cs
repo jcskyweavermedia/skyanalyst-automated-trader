@@ -1,6 +1,6 @@
 /*
  * ================================================================================
- * Trading Panel 2.0 - Receiver
+ * Trading Panel Rv 2.0
  * ================================================================================
  * 
  * Copyright © 2025 SkyAnalyst AI LLC
@@ -330,6 +330,15 @@ namespace cAlgo.Robots
         [Parameter("Daily Stop Loss (%)", Group = "Risk Management", DefaultValue = 2.0)]
         public double DailyStopLossPercent { get; set; }
 
+        [Parameter("Target Profit Mode", Group = "Profit Target (Received Trades)", DefaultValue = RiskCalculationMode.Dollar_Amount)]
+        public RiskCalculationMode TargetProfitMode { get; set; }
+
+        [Parameter("Target Profit (%)", Group = "Profit Target (Received Trades)", DefaultValue = 1.0)]
+        public double TargetProfitPercent { get; set; }
+
+        [Parameter("Target Profit ($)", Group = "Profit Target (Received Trades)", DefaultValue = 100.0)]
+        public double TargetProfitDollar { get; set; }
+
         [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 30.0)]
         public double TP1Percent { get; set; }
 
@@ -432,7 +441,18 @@ namespace cAlgo.Robots
 
             _labelPrefix = AccountName + "_";
 
-            PrintLocal($"Starting Bot for Account='{AccountName}'...");
+            PrintLocal($"Starting Trading Panel Rv 2.0 for Account='{AccountName}'...");
+
+            // Force Reverse mode
+            if (TradeModeParam == TradeMode.Copy)
+            {
+                PrintLocal("WARNING: Copy mode is disabled in Trading Panel Rv 2.0. Forcing Reverse mode.");
+                TradeModeParam = TradeMode.Reverse;
+            }
+
+            PrintLocal($"Trading Panel Rv 2.0 - Mode: {TradeModeParam} (Reverse Only)");
+            PrintLocal("Manual trading enabled - uses Risk parameters");
+            PrintLocal("Received trades use Target Profit parameters");
 
             double initialRiskNow = GetDynamicRiskPercent();
             PrintLocal($"Startup => StartingBalance={StartingBalance:F2}, " +
@@ -442,11 +462,20 @@ namespace cAlgo.Robots
 
             if (RiskMode == RiskCalculationMode.Percentage)
             {
-                PrintLocal($"Risk Mode: Percentage, Starting: {StartingRiskPercent}%, Max: {MaxRiskPercent}%");
+                PrintLocal($"Risk Mode (Manual): Percentage, Starting: {StartingRiskPercent}%, Max: {MaxRiskPercent}%");
             }
             else
             {
-                PrintLocal($"Risk Mode: Dollar Amount, Starting: ${StartingRiskDollar}, Max: ${MaxRiskDollar}");
+                PrintLocal($"Risk Mode (Manual): Dollar Amount, Starting: ${StartingRiskDollar}, Max: ${MaxRiskDollar}");
+            }
+
+            if (TargetProfitMode == RiskCalculationMode.Percentage)
+            {
+                PrintLocal($"Target Profit Mode (Received): Percentage, Target: {TargetProfitPercent}%");
+            }
+            else
+            {
+                PrintLocal($"Target Profit Mode (Received): Dollar Amount, Target: ${TargetProfitDollar}");
             }
 
             _dailyStartBalance = Account.Balance;
@@ -853,21 +882,23 @@ namespace cAlgo.Robots
                 return;
             }
 
-            // 4. Calculate position size using receiver's own risk settings
-            double riskAmt = GetDynamicRiskAmount();
-            if (riskAmt <= 0)
+            // 4. PR MODE: Extract broadcaster's SL price (becomes our TP)
+            double broadcasterSLPrice = 0;
+            if (slPrice.HasValue)
             {
-                PrintLocal("Dynamic risk amount is 0 or negative");
-                return;
+                broadcasterSLPrice = slPrice.Value;
+            }
+            else if (slPips.HasValue)
+            {
+                // Calculate SL price from pips
+                double currentPrice = (receivedType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
+                if (receivedType == TradeType.Buy)
+                    broadcasterSLPrice = currentPrice - (slPips.Value * Symbol.PipSize);
+                else
+                    broadcasterSLPrice = currentPrice + (slPips.Value * Symbol.PipSize);
             }
 
-            double volumeUnits = riskAmt / (finalSlPips * Symbol.PipValue);
-            volumeUnits = Symbol.NormalizeVolumeInUnits(volumeUnits, RoundingMode.ToNearest);
-            
-            if (volumeUnits < Symbol.VolumeInUnitsMin)
-                volumeUnits = Symbol.VolumeInUnitsMin;
-
-            PrintLocal($"Risk Amount: ${riskAmt:F2}, Total Volume: {volumeUnits} units");
+            PrintLocal($"PR Mode: Broadcaster's SL = {broadcasterSLPrice:F5} (becomes our TP)");
 
             // 5. Parse TP levels from broadcast first to determine how many positions to open
             double tp1Pips = 0, tp2Pips = 0, tp3Pips = 0;
@@ -996,108 +1027,103 @@ namespace cAlgo.Robots
                 }
             }
 
-            // 6. Split into positions based on how many TPs were received
+            // 6. PR MODE: Calculate PR Receiver's levels (INVERTED)
+            // Our TP = Broadcaster's SL (shared by all partials)
+            double prReceiverTP = broadcasterSLPrice;
+            
+            // Our SLs = Broadcaster's TPs (individual per partial)
+            double prReceiverSL1 = tp1Price;
+            double prReceiverSL2 = tp2Price;
+            double prReceiverSL3 = tp3Price;
+            
+            PrintLocal($"PR Levels: Our TP={prReceiverTP:F5} (their SL)");
+            PrintLocal($"PR Levels: Our SL1={prReceiverSL1:F5} (their TP1), SL2={prReceiverSL2:F5} (their TP2), SL3={prReceiverSL3:F5} (their TP3)");
+            
+            // 7. PR MODE: Calculate position size based on TARGET PROFIT
+            double entryPrice = (actualType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
+            double tpDistancePips = Math.Abs(entryPrice - prReceiverTP) / Symbol.PipSize;
+            
+            double targetProfit = GetDynamicProfitAmount();
+            if (targetProfit <= 0)
+            {
+                PrintLocal("Target profit amount is 0 or negative");
+                return;
+            }
+            
+            double totalVolumeUnits = targetProfit / (tpDistancePips * Symbol.PipValue);
+            totalVolumeUnits = Symbol.NormalizeVolumeInUnits(totalVolumeUnits, RoundingMode.ToNearest);
+            
+            if (totalVolumeUnits < Symbol.VolumeInUnitsMin)
+                totalVolumeUnits = Symbol.VolumeInUnitsMin;
+            
+            PrintLocal($"PR Position Sizing: Target Profit=${targetProfit:F2}, TP Distance={tpDistancePips:F1}p, Total Volume={totalVolumeUnits} units");
+            
+            // 8. Split volume across partials
             double pos1 = 0, pos2 = 0, pos3 = 0;
             bool hasTP3 = (hasTPLevels && tpCount >= 3);
             
             if (hasTP3)
             {
-                // 3 TP levels - use normal split
-                pos1 = volumeUnits * (TP1Percent / 100.0);
-                pos2 = volumeUnits * (TP2Percent / 100.0);
-                pos3 = volumeUnits * (TP3Percent / 100.0);
+                pos1 = totalVolumeUnits * (TP1Percent / 100.0);
+                pos2 = totalVolumeUnits * (TP2Percent / 100.0);
+                pos3 = totalVolumeUnits * (TP3Percent / 100.0);
             }
             else if (hasTPLevels && tpCount == 2)
             {
-                // Only 2 TP levels - redistribute volume between TP1 and TP2
                 double total12 = TP1Percent + TP2Percent;
-                pos1 = volumeUnits * (TP1Percent / total12);
-                pos2 = volumeUnits * (TP2Percent / total12);
+                pos1 = totalVolumeUnits * (TP1Percent / total12);
+                pos2 = totalVolumeUnits * (TP2Percent / total12);
                 pos3 = 0;
-                PrintLocal($"Redistributing volume for 2 TPs: {TP1Percent}/{total12} and {TP2Percent}/{total12}");
+                PrintLocal($"Only 2 TPs received: redistributing volume {TP1Percent}/{total12} and {TP2Percent}/{total12}");
             }
             else
             {
-                // No TP levels received - use all 3 positions with default settings
-                pos1 = volumeUnits * (TP1Percent / 100.0);
-                pos2 = volumeUnits * (TP2Percent / 100.0);
-                pos3 = volumeUnits * (TP3Percent / 100.0);
+                pos1 = totalVolumeUnits * (TP1Percent / 100.0);
+                pos2 = totalVolumeUnits * (TP2Percent / 100.0);
+                pos3 = totalVolumeUnits * (TP3Percent / 100.0);
             }
-
+            
             pos1 = Symbol.NormalizeVolumeInUnits(pos1, RoundingMode.ToNearest);
             pos2 = Symbol.NormalizeVolumeInUnits(pos2, RoundingMode.ToNearest);
             if (hasTP3 || !hasTPLevels)
                 pos3 = Symbol.NormalizeVolumeInUnits(pos3, RoundingMode.ToNearest);
-
+            
             if (pos1 < Symbol.VolumeInUnitsMin) pos1 = Symbol.VolumeInUnitsMin;
             if (pos2 < Symbol.VolumeInUnitsMin) pos2 = Symbol.VolumeInUnitsMin;
             if ((hasTP3 || !hasTPLevels) && pos3 < Symbol.VolumeInUnitsMin) pos3 = Symbol.VolumeInUnitsMin;
-
-            // 7. Calculate TP levels for receiver (reverse if needed)
-            double finalTP1 = 0, finalTP2 = 0, finalTP3 = 0;
             
-            if (hasTPLevels)
-            {
-                if (TPModMode == TPModificationMode.Price)
-                {
-                    // Use price mode - reverse if in Reverse mode
-                    if (TradeModeParam == TradeMode.Reverse)
-                    {
-                        finalTP1 = ReverseTPPrice(tp1Price, receivedType, actualType);
-                        finalTP2 = ReverseTPPrice(tp2Price, receivedType, actualType);
-                        finalTP3 = ReverseTPPrice(tp3Price, receivedType, actualType);
-                        PrintLocal($"TP Prices reversed: TP1={finalTP1:F5}, TP2={finalTP2:F5}, TP3={finalTP3:F5}");
-                    }
-                    else
-                    {
-                        finalTP1 = tp1Price;
-                        finalTP2 = tp2Price;
-                        finalTP3 = tp3Price;
-                        PrintLocal($"TP Prices copied: TP1={finalTP1:F5}, TP2={finalTP2:F5}, TP3={finalTP3:F5}");
-                    }
-                }
-                else // Pip_Diff mode
-                {
-                    // Calculate TP from pip distance (automatically correct for direction)
-                    double currentPrice = (actualType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
-                    
-                    finalTP1 = CalculateTPFromPips(actualType, currentPrice, tp1Pips);
-                    finalTP2 = CalculateTPFromPips(actualType, currentPrice, tp2Pips);
-                    finalTP3 = CalculateTPFromPips(actualType, currentPrice, tp3Pips);
-                    
-                    PrintLocal($"TP from pips: TP1={finalTP1:F5}, TP2={finalTP2:F5}, TP3={finalTP3:F5}");
-                }
-            }
-            else
-            {
-                // No TP levels received - use receiver's own R values
-                double currentPrice = (actualType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
-                finalTP1 = CalculateTPFromPips(actualType, currentPrice, finalSlPips * TP1R);
-                finalTP2 = CalculateTPFromPips(actualType, currentPrice, finalSlPips * TP2R);
-                finalTP3 = CalculateTPFromPips(actualType, currentPrice, finalSlPips * TP3R);
-                PrintLocal($"Using receiver's TP settings: TP1={TP1R}R, TP2={TP2R}R, TP3={TP3R}R");
-            }
-
-            // 8. Execute market orders with calculated TP prices
+            // 9. Calculate and log risk per partial
+            double sl1DistancePips = Math.Abs(entryPrice - prReceiverSL1) / Symbol.PipSize;
+            double sl2DistancePips = Math.Abs(entryPrice - prReceiverSL2) / Symbol.PipSize;
+            double sl3DistancePips = Math.Abs(entryPrice - prReceiverSL3) / Symbol.PipSize;
+            
+            double risk1 = pos1 * sl1DistancePips * Symbol.PipValue;
+            double risk2 = pos2 * sl2DistancePips * Symbol.PipValue;
+            double risk3 = pos3 * sl3DistancePips * Symbol.PipValue;
+            double totalRisk = risk1 + risk2 + risk3;
+            
+            PrintLocal($"PR Risk Analysis: TP1=${risk1:F2}, TP2=${risk2:F2}, TP3=${risk3:F2}, Total=${totalRisk:F2}");
+            
+            // 10. Execute market orders with INDIVIDUAL SLs but SHARED TP
             if (hasTP3)
             {
-                PrintLocal($"Executing 3 positions: TP1={pos1} units, TP2={pos2}, TP3={pos3}");
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos1, $"{_labelPrefix}TP1", finalSlPips, finalTP1);
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos2, $"{_labelPrefix}TP2", finalSlPips, finalTP2);
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos3, $"{_labelPrefix}TP3", finalSlPips, finalTP3);
+                PrintLocal($"PR Executing 3 positions: TP1={pos1} units, TP2={pos2}, TP3={pos3}");
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos1, $"{_labelPrefix}TP1", prReceiverSL1, prReceiverTP);
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos2, $"{_labelPrefix}TP2", prReceiverSL2, prReceiverTP);
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos3, $"{_labelPrefix}TP3", prReceiverSL3, prReceiverTP);
             }
             else if (hasTPLevels && tpCount == 2)
             {
-                PrintLocal($"Executing 2 positions: TP1={pos1} units, TP2={pos2}");
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos1, $"{_labelPrefix}TP1", finalSlPips, finalTP1);
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos2, $"{_labelPrefix}TP2", finalSlPips, finalTP2);
+                PrintLocal($"PR Executing 2 positions: TP1={pos1} units, TP2={pos2}");
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos1, $"{_labelPrefix}TP1", prReceiverSL1, prReceiverTP);
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos2, $"{_labelPrefix}TP2", prReceiverSL2, prReceiverTP);
             }
             else
             {
-                PrintLocal($"Executing 3 positions (default): TP1={pos1} units, TP2={pos2}, TP3={pos3}");
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos1, $"{_labelPrefix}TP1", finalSlPips, finalTP1);
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos2, $"{_labelPrefix}TP2", finalSlPips, finalTP2);
-                ExecuteMarketOrderWithTPPrice(actualType, symbol, pos3, $"{_labelPrefix}TP3", finalSlPips, finalTP3);
+                PrintLocal($"PR Executing 3 positions (default): TP1={pos1} units, TP2={pos2}, TP3={pos3}");
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos1, $"{_labelPrefix}TP1", prReceiverSL1, prReceiverTP);
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos2, $"{_labelPrefix}TP2", prReceiverSL2, prReceiverTP);
+                ExecuteMarketOrderWithIndividualLevels(actualType, symbol, pos3, $"{_labelPrefix}TP3", prReceiverSL3, prReceiverTP);
             }
 
             // 8. Set position tracking flag
@@ -1156,6 +1182,35 @@ namespace cAlgo.Robots
             }
         }
 
+        private void ExecuteMarketOrderWithIndividualLevels(TradeType tradeType, string symbol, double volume, 
+                                                             string label, double slPrice, double tpPrice)
+        {
+            double entryPrice = (tradeType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
+            
+            // Calculate SL distance in pips
+            double slDistancePips = Math.Abs(entryPrice - slPrice) / Symbol.PipSize;
+            
+            // Calculate TP distance in pips
+            double tpDistancePips = Math.Abs(entryPrice - tpPrice) / Symbol.PipSize;
+            
+#pragma warning disable 0618
+            var result = ExecuteMarketOrder(tradeType, symbol, volume, label, slDistancePips, tpDistancePips);
+#pragma warning restore 0618
+            
+            if (result.IsSuccessful)
+            {
+                PrintLocal($"PR Position opened: {label}, Vol={volume}, SL={slPrice:F5} ({slDistancePips:F1}p), TP={tpPrice:F5} ({tpDistancePips:F1}p)");
+                
+                // Log the risk for this partial
+                double riskForPartial = volume * slDistancePips * Symbol.PipValue;
+                PrintLocal($"  Risk for {label}: ${riskForPartial:F2}");
+            }
+            else
+            {
+                PrintLocal($"Failed to open PR {label}: {result.Error}");
+            }
+        }
+
         private void ProcessTPModification(Dictionary<string, JsonElement> message)
         {
             try
@@ -1166,7 +1221,7 @@ namespace cAlgo.Robots
                 double tpPipDiff = message["tp_pip_diff"].GetDouble();
                 
                 string prefixedLabel = $"{_labelPrefix}{posLabel}";
-                PrintLocal($"Received TP Mod: {posLabel} -> {prefixedLabel}, Price={tpPrice:F5}, PipDiff={tpPipDiff:F1}");
+                PrintLocal($"Received TP Mod (PR Mode - will modify SL): {posLabel} -> {prefixedLabel}, Price={tpPrice:F5}, PipDiff={tpPipDiff:F1}");
                 
                 var matchingPositions = Positions.Where(p => 
                     p.SymbolName == SymbolName && 
@@ -1178,40 +1233,35 @@ namespace cAlgo.Robots
                     return;
                 }
                 
-                double newTP = 0;
+                // PR MODE: Broadcaster's TP becomes our SL
+                double newSL = 0;
                 TradeType originalType = Enum.Parse<TradeType>(tradeTypeStr);
-                TradeType actualType = (TradeModeParam == TradeMode.Copy) 
-                    ? originalType 
-                    : (originalType == TradeType.Buy ? TradeType.Sell : TradeType.Buy);
+                TradeType actualType = (originalType == TradeType.Buy) ? TradeType.Sell : TradeType.Buy;
                 
                 if (TPModMode == TPModificationMode.Price)
                 {
-                    if (TradeModeParam == TradeMode.Reverse)
-                    {
-                        newTP = ReverseTPPrice(tpPrice, originalType, actualType);
-                        PrintLocal($"TP Price (reversed): {newTP:F5}");
-                    }
-                    else
-                    {
-                        newTP = tpPrice;
-                        PrintLocal($"TP Price: {newTP:F5}");
-                    }
+                    // Broadcaster's TP price becomes our SL price directly
+                    // Since we're reversed, their TP is on the opposite side of entry
+                    newSL = tpPrice;
+                    PrintLocal($"PR Mode: Broadcaster's TP → Our SL: {newSL:F5}");
                 }
-                else
+                else // Pip_Diff mode
                 {
-                    double myCurrentPrice = (actualType == TradeType.Buy) ? Symbol.Bid : Symbol.Ask;
-                    newTP = CalculateTPFromPips(actualType, myCurrentPrice, tpPipDiff);
-                    PrintLocal($"TP from pips: {tpPipDiff:F1}p = {newTP:F5}");
+                    // Calculate new SL from pip difference
+                    double myCurrentPrice = (actualType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
+                    newSL = CalculateSLFromPips(actualType, myCurrentPrice, tpPipDiff);
+                    PrintLocal($"PR Mode: Broadcaster's TP pips → Our SL: {tpPipDiff:F1}p = {newSL:F5}");
                 }
                 
+                // Modify the SL (not TP) for this position
                 foreach (var pos in matchingPositions)
                 {
-                    ModifyPositionTP(pos, newTP);
+                    ModifyPositionSL(pos, newSL);
                 }
             }
             catch (Exception ex)
             {
-                PrintLocal($"Error processing TP mod: {ex.Message}");
+                PrintLocal($"Error processing TP mod in PR mode: {ex.Message}");
             }
         }
 
@@ -1243,53 +1293,46 @@ namespace cAlgo.Robots
                 double slPrice = message["sl_price"].GetDouble();
                 double slPipDiff = message["sl_pip_diff"].GetDouble();
                 
-                string prefixedLabel = $"{_labelPrefix}{posLabel}";
-                PrintLocal($"Received SL Mod: {posLabel} -> {prefixedLabel}, Price={slPrice:F5}, PipDiff={slPipDiff:F1}");
+                PrintLocal($"Received SL Mod (PR Mode - will modify TP for all partials): Price={slPrice:F5}, PipDiff={slPipDiff:F1}");
                 
-                var matchingPositions = Positions.Where(p => 
-                    p.SymbolName == SymbolName && 
-                    p.Label == prefixedLabel).ToList();
+                // PR MODE: When broadcaster moves SL, we need to move TP for ALL partials
+                var allPartials = Positions.Where(p => IsOwnPosition(p)).ToList();
                 
-                if (matchingPositions.Count == 0)
+                if (allPartials.Count == 0)
                 {
-                    PrintLocal($"No matching position for: {posLabel}");
+                    PrintLocal($"No PR positions found to modify TP");
                     return;
                 }
                 
-                double newSL = 0;
+                // PR MODE: Broadcaster's SL becomes our TP
+                double newTP = 0;
                 TradeType originalType = Enum.Parse<TradeType>(tradeTypeStr);
-                TradeType actualType = (TradeModeParam == TradeMode.Copy) 
-                    ? originalType 
-                    : (originalType == TradeType.Buy ? TradeType.Sell : TradeType.Buy);
+                TradeType actualType = (originalType == TradeType.Buy) ? TradeType.Sell : TradeType.Buy;
                 
                 if (SLModMode == SLModificationMode.Price)
                 {
-                    if (TradeModeParam == TradeMode.Reverse)
-                    {
-                        newSL = ReverseSLPrice(slPrice, originalType, actualType);
-                        PrintLocal($"SL Price (reversed): {newSL:F5}");
-                    }
-                    else
-                    {
-                        newSL = slPrice;
-                        PrintLocal($"SL Price: {newSL:F5}");
-                    }
+                    // Broadcaster's SL price becomes our TP price directly
+                    newTP = slPrice;
+                    PrintLocal($"PR Mode: Broadcaster's SL → Our TP (all partials): {newTP:F5}");
                 }
-                else
+                else // Pip_Diff mode
                 {
-                    double myCurrentPrice = (actualType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
-                    newSL = CalculateSLFromPips(actualType, myCurrentPrice, slPipDiff);
-                    PrintLocal($"SL from pips: {slPipDiff:F1}p = {newSL:F5}");
+                    // Calculate new TP from pip difference
+                    double myCurrentPrice = (actualType == TradeType.Buy) ? Symbol.Bid : Symbol.Ask;
+                    newTP = CalculateTPFromPips(actualType, myCurrentPrice, slPipDiff);
+                    PrintLocal($"PR Mode: Broadcaster's SL pips → Our TP: {slPipDiff:F1}p = {newTP:F5}");
                 }
                 
-                foreach (var pos in matchingPositions)
+                // Modify the TP (not SL) for ALL partials
+                foreach (var pos in allPartials)
                 {
-                    ModifyPositionSL(pos, newSL);
+                    ModifyPositionTP(pos, newTP);
+                    PrintLocal($"  Modified TP for {pos.Label} to {newTP:F5}");
                 }
             }
             catch (Exception ex)
             {
-                PrintLocal($"Error processing SL mod: {ex.Message}");
+                PrintLocal($"Error processing SL mod in PR mode: {ex.Message}");
             }
         }
 
@@ -1635,6 +1678,23 @@ namespace cAlgo.Robots
             }
         }
 
+        // -----------------------------------------------------------------------
+        // Fixed Profit Amount Calculation (for Received Trades)
+        // -----------------------------------------------------------------------
+        public double GetDynamicProfitAmount()
+        {
+            if (TargetProfitMode == RiskCalculationMode.Percentage)
+            {
+                // Percentage mode - use fixed percentage
+                return Account.Balance * (TargetProfitPercent / 100.0);
+            }
+            else
+            {
+                // Dollar Amount mode - use fixed dollar amount
+                return TargetProfitDollar;
+            }
+        }
+
 
 
         private void PrintLocal(string msg)
@@ -1790,7 +1850,7 @@ namespace cAlgo.Robots
             
             var brandingText = new TextBlock
             {
-                Text = "SkyTrading Panel Receiver",
+                Text = "Trading Panel Rv 2.0",
                 FontSize = 9,
                 Margin = "0 8 0 0",
                 HorizontalAlignment = HorizontalAlignment.Center,

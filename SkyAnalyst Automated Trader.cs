@@ -608,6 +608,7 @@ namespace cAlgo.Robots
         private bool _webhookServerError = false;
         private int _webhookStartAttempts = 0;
         private const int MAX_WEBHOOK_ATTEMPTS = 3;
+        private string _labelPrefix;
         private double _actualStartingBalance;
         private double _effectiveStartingBalance;
         private Dictionary<string, string> _symbolMappings = new Dictionary<string, string>
@@ -642,6 +643,8 @@ namespace cAlgo.Robots
             }
 
             var nowLocalEcu = TimeZoneInfo.ConvertTimeFromUtc(Server.TimeInUtc, _ecuadorTimeZone);
+
+            _labelPrefix = AccountName + "_";
 
             // Always capture actual starting balance (for Fixed Risk mode drawdown calculations)
             _actualStartingBalance = Account.Balance;
@@ -722,16 +725,13 @@ namespace cAlgo.Robots
                 this,
                 TP1Percent, TP2Percent, TP3Percent,
                 TP1R, TP2R, TP3R,
-                TSL_Enabled, TSL_R_Trigger, TSL_R_Distance
+                TSL_Enabled, TSL_R_Trigger, TSL_R_Distance,
+                _labelPrefix
             );
 
             Positions.Closed += OnPositionClosed;
 
-            bool leftoverPartial = Positions.Any(pos =>
-                pos.SymbolName == SymbolName &&
-                (pos.Label == "TP1Position" || pos.Label == "TP2Position" || pos.Label == "TP3Position") &&
-                pos.Quantity > 0
-            );
+            bool leftoverPartial = Positions.Any(pos => IsOwnPosition(pos) && pos.Quantity > 0);
             if (leftoverPartial)
             {
                 _manualPositionOpen = true;
@@ -1164,11 +1164,11 @@ namespace cAlgo.Robots
                 double riskAmount = CalculateRiskAmount(slDistancePips);
                 double totalVolume = pos1 + pos2 + pos3;
 
-                // Create position labels with trade ID
+                // Create position labels with account prefix + trade ID for isolation
                 string shortTradeId = GetShortTradeId(webhook.TradeId);
-                string label1 = $"{shortTradeId}_TP1";
-                string label2 = $"{shortTradeId}_TP2";
-                string label3 = $"{shortTradeId}_TP3";
+                string label1 = $"{_labelPrefix}{shortTradeId}_TP1";
+                string label2 = $"{_labelPrefix}{shortTradeId}_TP2";
+                string label3 = $"{_labelPrefix}{shortTradeId}_TP3";
 
                 // Execute orders based on DefaultSLMode setting
                 if (DefaultSLMode == SLCalculationMode.Price)
@@ -1467,10 +1467,10 @@ namespace cAlgo.Robots
             double tp2 = finalDist * tp2R;
             double tp3 = finalDist * tp3R;
 
-            // Use MANUAL prefix for manual trades to distinguish from webhook trades
-            ExecuteMarketOrderAsync(tradeType, SymbolName, pos1, "MANUAL_TP1", finalDist, tp1);
-            ExecuteMarketOrderAsync(tradeType, SymbolName, pos2, "MANUAL_TP2", finalDist, tp2);
-            ExecuteMarketOrderAsync(tradeType, SymbolName, pos3, "MANUAL_TP3", finalDist, tp3);
+            // Use account-specific prefix for position isolation between bot instances
+            ExecuteMarketOrderAsync(tradeType, SymbolName, pos1, $"{_labelPrefix}TP1", finalDist, tp1);
+            ExecuteMarketOrderAsync(tradeType, SymbolName, pos2, $"{_labelPrefix}TP2", finalDist, tp2);
+            ExecuteMarketOrderAsync(tradeType, SymbolName, pos3, $"{_labelPrefix}TP3", finalDist, tp3);
 
             // Calculate SL and TP prices for JSON message
             double currentPrice = (tradeType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
@@ -1494,8 +1494,15 @@ namespace cAlgo.Robots
             SendJsonMessage("Close All Positions", null, null, null, null, null, false, SymbolName, JsonSLFormat);
 
             foreach (var pos in Positions)
-                if (pos.SymbolName == SymbolName)
+                if (IsOwnPosition(pos))
                     ClosePositionAsync(pos);
+        }
+
+        private bool IsOwnPosition(Position pos)
+        {
+            return pos.SymbolName == SymbolName
+                && pos.Label != null
+                && pos.Label.StartsWith(_labelPrefix, StringComparison.OrdinalIgnoreCase);
         }
 
         public void ToggleStatusCard()
@@ -1522,12 +1529,10 @@ namespace cAlgo.Robots
 
             BeginInvokeOnMainThread(() =>
             {
-                if (_manualPositionOpen && pos.Label.StartsWith("TP", StringComparison.OrdinalIgnoreCase))
+                if (_manualPositionOpen && pos.Label != null && pos.Label.StartsWith(_labelPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     _manualTradeCumulativeProfit += pos.NetProfit;
-                    var remain = Positions.Count(p => p.SymbolName == SymbolName
-                                           && p.Label.StartsWith("TP", StringComparison.OrdinalIgnoreCase)
-                                           && p.Quantity > 0);
+                    var remain = Positions.Count(p => IsOwnPosition(p) && p.Quantity > 0);
                     if (remain == 0)
                     {
                         _manualPositionOpen = false;
@@ -1622,7 +1627,7 @@ namespace cAlgo.Robots
 
         private void CheckTPModifications()
         {
-            foreach (var pos in Positions.Where(p => p.SymbolName == SymbolName))
+            foreach (var pos in Positions.Where(p => IsOwnPosition(p)))
             {
                 if (!_positionTPLevels.ContainsKey(pos.Id))
                 {
@@ -1649,7 +1654,7 @@ namespace cAlgo.Robots
 
         private void CheckSLModifications()
         {
-            foreach (var pos in Positions.Where(p => p.SymbolName == SymbolName))
+            foreach (var pos in Positions.Where(p => IsOwnPosition(p)))
             {
                 if (!_positionSLLevels.ContainsKey(pos.Id))
                 {
@@ -1686,11 +1691,16 @@ namespace cAlgo.Robots
             double tpPrice = pos.TakeProfit.Value;
             double tpPipDiff = Math.Abs(currentPrice - tpPrice) / Symbol.PipSize;
             
+            // Strip bot-specific prefix before broadcasting so receivers get standardized labels
+            string broadcastLabel = pos.Label.StartsWith(_labelPrefix, StringComparison.OrdinalIgnoreCase)
+                ? pos.Label.Substring(_labelPrefix.Length)
+                : pos.Label;
+
             var msg = new Dictionary<string, object>
             {
                 ["action"] = "ModifyTP",
                 ["symbol"] = SymbolName,
-                ["position_label"] = pos.Label,
+                ["position_label"] = broadcastLabel,
                 ["trade_type"] = pos.TradeType.ToString(),
                 ["tp_price"] = tpPrice,
                 ["tp_pip_diff"] = tpPipDiff,
@@ -1735,11 +1745,16 @@ namespace cAlgo.Robots
             double slPrice = pos.StopLoss.Value;
             double slPipDiff = Math.Abs(currentPrice - slPrice) / Symbol.PipSize;
             
+            // Strip bot-specific prefix before broadcasting so receivers get standardized labels
+            string broadcastLabel = pos.Label.StartsWith(_labelPrefix, StringComparison.OrdinalIgnoreCase)
+                ? pos.Label.Substring(_labelPrefix.Length)
+                : pos.Label;
+
             var msg = new Dictionary<string, object>
             {
                 ["action"] = "ModifySL",
                 ["symbol"] = SymbolName,
-                ["position_label"] = pos.Label,
+                ["position_label"] = broadcastLabel,
                 ["trade_type"] = pos.TradeType.ToString(),
                 ["sl_price"] = slPrice,
                 ["sl_pip_diff"] = slPipDiff,
@@ -1774,11 +1789,16 @@ namespace cAlgo.Robots
 
         private void BroadcastPositionClosure(Position pos)
         {
+            // Strip bot-specific prefix before broadcasting so receivers get standardized labels
+            string broadcastLabel = pos.Label.StartsWith(_labelPrefix, StringComparison.OrdinalIgnoreCase)
+                ? pos.Label.Substring(_labelPrefix.Length)
+                : pos.Label;
+
             var msg = new Dictionary<string, object>
             {
                 ["action"] = "ClosePosition",
                 ["symbol"] = SymbolName,
-                ["position_label"] = pos.Label,
+                ["position_label"] = broadcastLabel,
                 ["trade_type"] = pos.TradeType.ToString()
             };
             
@@ -2523,12 +2543,14 @@ namespace cAlgo.Robots
         private double TSL_R_Trigger;
         private double TSL_R_Distance;
         private HashSet<string> _trailingActivatedGroups = new HashSet<string>();
+        private readonly string _labelPrefix;
 
         public MultiPositionPartialTPManager(
             NewsTradePanelWWebhook robot,
             double tp1p, double tp2p, double tp3p,
             double tp1r, double tp2r, double tp3r,
-            bool tslEnabled, double tslRTrigger, double tslRDistance)
+            bool tslEnabled, double tslRTrigger, double tslRDistance,
+            string labelPrefix)
         {
             _robot = robot;
             TP1Percent = tp1p;
@@ -2540,6 +2562,7 @@ namespace cAlgo.Robots
             TSL_Enabled = tslEnabled;
             TSL_R_Trigger = tslRTrigger;
             TSL_R_Distance = tslRDistance;
+            _labelPrefix = labelPrefix;
         }
 
         public void CheckPositions()
@@ -2602,8 +2625,8 @@ namespace cAlgo.Robots
         {
             var newly = _robot.Positions
                 .Where(p => p.SymbolName == _robot.SymbolName
-                    && (p.Label == "TP1Position" || p.Label == "TP2Position" || p.Label == "TP3Position" ||
-                        p.Label.Contains("_TP1") || p.Label.Contains("_TP2") || p.Label.Contains("_TP3"))
+                    && p.Label != null
+                    && p.Label.StartsWith(_labelPrefix, StringComparison.OrdinalIgnoreCase)
                     && p.Quantity > 0
                     && !_mpos.Any(x => x.Id == p.Id))
                 .ToList();
@@ -2612,13 +2635,14 @@ namespace cAlgo.Robots
             {
                 if (!pos.StopLoss.HasValue) continue;
                 
-                // Extract trade group ID from label
-                string tradeGroupId = "MANUAL";
-                if (pos.Label.Contains("_TP"))
+                // Extract trade group ID from label (strip prefix first)
+                string labelWithoutPrefix = pos.Label.Substring(_labelPrefix.Length);
+                string tradeGroupId = _labelPrefix.TrimEnd('_');
+                if (labelWithoutPrefix.Contains("_TP"))
                 {
-                    int underscoreIndex = pos.Label.IndexOf("_TP");
+                    int underscoreIndex = labelWithoutPrefix.IndexOf("_TP");
                     if (underscoreIndex > 0)
-                        tradeGroupId = pos.Label.Substring(0, underscoreIndex);
+                        tradeGroupId = labelWithoutPrefix.Substring(0, underscoreIndex);
                 }
                 
                 var mp = new ManagedPosition
