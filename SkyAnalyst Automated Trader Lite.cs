@@ -1,6 +1,6 @@
 /*
  * ================================================================================
- * SkyAnalyst Automated Trader
+ * SkyAnalyst Automated Trader Lite
  * ================================================================================
  * 
  * Copyright © 2025 SkyAnalyst AI LLC
@@ -302,7 +302,7 @@ namespace cAlgo.Robots
 
     public class StatusCard : CustomControl
     {
-        private readonly NewsTradePanelWWebhook _bot;
+        private readonly SkyAnalystAutomatedTraderLite _bot;
         private readonly string _accountName;
         private readonly RiskModeType _riskMode;
         private readonly int _webhookPort;
@@ -319,7 +319,7 @@ namespace cAlgo.Robots
         private TextBlock _botModeText;
 
         public StatusCard(
-            NewsTradePanelWWebhook bot,
+            SkyAnalystAutomatedTraderLite bot,
             string accountName,
             RiskModeType riskMode,
             int webhookPort,
@@ -440,41 +440,26 @@ namespace cAlgo.Robots
     }
 
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
-    public class NewsTradePanelWWebhook : Robot
+    public class SkyAnalystAutomatedTraderLite : Robot
     {
-        // ------------------------ "SkyAnalyst Automated Trader" ------------------------
-        [Parameter("Bot Mode", Group = "SkyAnalyst Automated Trader", DefaultValue = BotModeType.Auto)]
+        // ======================== VISIBLE PARAMETERS ========================
+
+        // ------------------------ "SkyAnalyst Automated Trader Lite" ------------------------
+        [Parameter("Bot Mode", Group = "SkyAnalyst Automated Trader Lite", DefaultValue = BotModeType.Auto)]
         public BotModeType BotMode { get; set; }
 
-        [Parameter("Status Card", Group = "SkyAnalyst Automated Trader", DefaultValue = StatusCardVisibility.Displayed)]
-        public StatusCardVisibility StatusCardVisibility { get; set; }
-
-        [Parameter("Account", Group = "SkyAnalyst Automated Trader", DefaultValue = "Demo Account")]
+        [Parameter("Account", Group = "SkyAnalyst Automated Trader Lite", DefaultValue = "Demo Account")]
         public string AccountName { get; set; }
 
         // ------------------------ "Trading Bridge Settings" ------------------------
         [Parameter("Listening Port", Group = "Trading Bridge Settings", DefaultValue = 8050)]
         public int WebhookPort { get; set; }
 
-        [Parameter("Port Enabled", Group = "Trading Bridge Settings", DefaultValue = true)]
-        public bool WebhookEnabled { get; set; }
-
         [Parameter("Symbol", Group = "Trading Bridge Settings", DefaultValue = SymbolFilterOption.Choose_Your_Instrument)]
         public SymbolFilterOption SymbolFilter { get; set; }
 
-        [Parameter("SL Zone Preference", Group = "Trading Bridge Settings", DefaultValue = SLZonePreference.Wide)]
-        public SLZonePreference SLZonePreference { get; set; }
-
-        [Parameter("TP Zone Preference", Group = "Trading Bridge Settings", DefaultValue = TPZonePreference.Full)]
-        public TPZonePreference TPZonePreference { get; set; }
-
         [Parameter("SL/TP Offset (pips)", Group = "Trading Bridge Settings", DefaultValue = 0.0)]
         public double SLTPOffsetPips { get; set; }
-        // -----------------------------------------------------------------------
-
-        // ------------------------ "Risk Mode" ------------------------
-        [Parameter("Risk Mode", Group = "Risk Mode", DefaultValue = RiskModeType.Fixed)]
-        public RiskModeType RiskMode { get; set; }
 
         // ------------------------ "Fixed Risk Settings" ------------------------
         [Parameter("Fixed Risk Unit", Group = "Fixed Risk Settings", DefaultValue = FixedRiskUnit.Percent)]
@@ -486,39 +471,14 @@ namespace cAlgo.Robots
         [Parameter("Fixed Risk ($)", Group = "Fixed Risk Settings", DefaultValue = 100.0)]
         public double FixedRiskDollar { get; set; }
 
-        // ------------------------ "Dynamic Risk Settings" ------------------------
-        [Parameter("Starting Balance", Group = "Dynamic Risk Settings", DefaultValue = 0)]
-        public double StartingBalance { get; set; }
-
-        [Parameter("Base Risk (%)", Group = "Dynamic Risk Settings", DefaultValue = 1.0)]
-        public double BaseRiskPercent { get; set; }
-
-        [Parameter("Max Risk (%)", Group = "Dynamic Risk Settings", DefaultValue = 2.0)]
-        public double MaxRiskPercent { get; set; }
-
-        // ------------------------ "Risk Scaling on Growth" ------------------------
-        [Parameter("Equity Growth Step (%)", Group = "Risk Scaling on Growth", DefaultValue = 3.0)]
-        public double EquityGrowthStep { get; set; }
-
-        [Parameter("Risk Increase per Step (%)", Group = "Risk Scaling on Growth", DefaultValue = 20.0)]
-        public double RiskIncreasePerStep { get; set; }
-
-        [Parameter("Risk Compounding", Group = "Risk Scaling on Growth", DefaultValue = true)]
-        public bool RiskCompounding { get; set; }
-
-        // ------------------------ "Risk Reduction on Drawdown" ------------------------
-        [Parameter("Drawdown Step (%)", Group = "Risk Reduction on Drawdown", DefaultValue = 5.0)]
-        public double DrawdownStep { get; set; }
-
-        [Parameter("Risk Reduction per Step (%)", Group = "Risk Reduction on Drawdown", DefaultValue = 50.0)]
-        public double RiskReductionPerStep { get; set; }
-
-        [Parameter("Max Drawdown (%)", Group = "Risk Reduction on Drawdown", DefaultValue = 15.0)]
+        // ------------------------ "Risk Limits" ------------------------
+        [Parameter("Max Drawdown (%)", Group = "Risk Limits", DefaultValue = 15.0)]
         public double MaxDrawdown { get; set; }
 
-        [Parameter("Max Daily Loss (%)", Group = "Risk Reduction on Drawdown", DefaultValue = 5.0)]
+        [Parameter("Max Daily Loss (%)", Group = "Risk Limits", DefaultValue = 5.0)]
         public double MaxDailyLoss { get; set; }
 
+        // ------------------------ "Trade Parameters" ------------------------
         [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 60.0)]
         public double TP1Percent { get; set; }
 
@@ -537,21 +497,7 @@ namespace cAlgo.Robots
         [Parameter("TP3 R", Group = "Trade Parameters", DefaultValue = 3.0)]
         public double TP3R { get; set; }
 
-        [Parameter("TSL Enabled", Group = "Trade Parameters", DefaultValue = false)]
-        public bool TSL_Enabled { get; set; }
-
-        [Parameter("TSL R Trigger", Group = "Trade Parameters", DefaultValue = 2.0)]
-        public double TSL_R_Trigger { get; set; }
-
-        [Parameter("TSL R Distance", Group = "Trade Parameters", DefaultValue = 2.0)]
-        public double TSL_R_Distance { get; set; }
-
-        [Parameter("Default Stop Loss (pips)", Group = "Trade Parameters", DefaultValue = 20)]
-        public double DefaultStopLossPips { get; set; }
-
-        [Parameter("Default SL Mode", Group = "Trade Parameters", DefaultValue = SLCalculationMode.Price)]
-        public SLCalculationMode DefaultSLMode { get; set; }
-
+        // ------------------------ "Daily Limits" ------------------------
         [Parameter("Max Positive Trades/Day", Group = "Daily Limits", DefaultValue = 2)]
         public int MaxPositiveTradesDay { get; set; }
 
@@ -561,26 +507,6 @@ namespace cAlgo.Robots
         [Parameter("Max Active Trades", Group = "Daily Limits", DefaultValue = 1)]
         public int MaxActiveTrades { get; set; }
 
-        // ------------------------ "Broadcast Trade Settings" ------------------------
-        [Parameter("Ports Active", Group = "Broadcast Trade Settings", DefaultValue = 0, MinValue = 0, MaxValue = 4)]
-        public int PortsActive { get; set; }
-
-        [Parameter("Port 1", Group = "Broadcast Trade Settings", DefaultValue = 8301)]
-        public int Port1 { get; set; }
-
-        [Parameter("Port 2", Group = "Broadcast Trade Settings", DefaultValue = 8302)]
-        public int Port2 { get; set; }
-
-        [Parameter("Port 3", Group = "Broadcast Trade Settings", DefaultValue = 8303)]
-        public int Port3 { get; set; }
-
-        [Parameter("Port 4", Group = "Broadcast Trade Settings", DefaultValue = 8304)]
-        public int Port4 { get; set; }
-
-        [Parameter("JSON SL Format", Group = "Broadcast Trade Settings", DefaultValue = JSONSLFormat.Pips)]
-        public JSONSLFormat JsonSLFormat { get; set; }
-        // -----------------------------------------------------------------------
-
         // ------------------------ "Logging" ------------------------
         [Parameter("Bot Log Folder", Group = "Logging",
             DefaultValue = @"C:\Users\juanc\iCloudDrive\Trading\US30 Terminator Bot\Bot Log")]
@@ -589,6 +515,32 @@ namespace cAlgo.Robots
         // ------------------------ "⚠️ For Educational Purposes Only" ------------------------
         [Parameter("Disclaimer", Group = "⚠️ For Educational Purposes Only", DefaultValue = "This bot is for educational and testing purposes only. Use at your own risk.")]
         public string Disclaimer { get; set; }
+
+        // ======================== HIDDEN (HARDCODED) SETTINGS ========================
+        public StatusCardVisibility StatusCardVisibility = StatusCardVisibility.Displayed;
+        public bool WebhookEnabled = true;
+        public SLZonePreference SLZonePreference = SLZonePreference.Wide;
+        public TPZonePreference TPZonePreference = TPZonePreference.Full;
+        public RiskModeType RiskMode = RiskModeType.Fixed;
+        public double StartingBalance = 0;
+        public double BaseRiskPercent = 1.0;
+        public double MaxRiskPercent = 2.0;
+        public double EquityGrowthStep = 3.0;
+        public double RiskIncreasePerStep = 20.0;
+        public bool RiskCompounding = true;
+        public double DrawdownStep = 5.0;
+        public double RiskReductionPerStep = 50.0;
+        public bool TSL_Enabled = false;
+        public double TSL_R_Trigger = 2.0;
+        public double TSL_R_Distance = 2.0;
+        public double DefaultStopLossPips = 20;
+        public SLCalculationMode DefaultSLMode = SLCalculationMode.Price;
+        public int PortsActive = 0;
+        public int Port1 = 8301;
+        public int Port2 = 8302;
+        public int Port3 = 8303;
+        public int Port4 = 8304;
+        public JSONSLFormat JsonSLFormat = JSONSLFormat.Pips;
 
         private bool _stopTrading;
         private double _dailyStartBalance;
@@ -2120,7 +2072,7 @@ namespace cAlgo.Robots
 
     public class TradingPanel : CustomControl
     {
-        private readonly NewsTradePanelWWebhook _bot;
+        private readonly SkyAnalystAutomatedTraderLite _bot;
         private readonly IAccount _account;
         private readonly Symbol _symbol;
         private double TP1Percent;
@@ -2143,7 +2095,7 @@ namespace cAlgo.Robots
         private TradeType selectedTradeType = TradeType.Buy;
         private SLCalculationMode selectedSLMode;
 
-        public TradingPanel(NewsTradePanelWWebhook bot,
+        public TradingPanel(SkyAnalystAutomatedTraderLite bot,
                             IAccount account,
                             Symbol symbol,
                             double defaultStopLossPips,
@@ -2379,7 +2331,7 @@ namespace cAlgo.Robots
 
             var brandingText = new TextBlock
             {
-                Text = "SkyAnalyst Automated Trader v1.0",
+                Text = "SkyAnalyst Automated Trader Lite v1.0",
                 FontSize = 10,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 Opacity = 0.6
@@ -2571,7 +2523,7 @@ namespace cAlgo.Robots
             public string TradeGroupId { get; set; }
         }
 
-        private readonly NewsTradePanelWWebhook _robot;
+        private readonly SkyAnalystAutomatedTraderLite _robot;
         private List<ManagedPosition> _mpos = new List<ManagedPosition>();
         private double TP1Percent;
         private double TP2Percent;
@@ -2586,7 +2538,7 @@ namespace cAlgo.Robots
         private readonly string _labelPrefix;
 
         public MultiPositionPartialTPManager(
-            NewsTradePanelWWebhook robot,
+            SkyAnalystAutomatedTraderLite robot,
             double tp1p, double tp2p, double tp3p,
             double tp1r, double tp2r, double tp3r,
             bool tslEnabled, double tslRTrigger, double tslRDistance,

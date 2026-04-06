@@ -1,0 +1,43 @@
+Bot Mode Keep
+Status Card - Hide
+Account - Keep
+Listenting Port Keep
+Port Enabled - HIDE
+Symbol - Keep
+SL Zone Preference - hide 
+TP Zone Preference - Hide
+SL/TP Offset - SHow, Default 0
+Risk Mode - hide (ensure fixed is default)
+Fixed Risk Unit Keep 
+Fixed Risk % Keep
+Fixed Risk $ Keep
+Starting Balance HIDE
+Base Risk % Hide
+Max Risk % Hide
+Equity Growth HIDE
+Risk Increase HIDE
+Risk Compounding HIDE
+Drawdown Step HIDE
+Risk Reduction HIDE
+Max Drawdown Keep 
+Max Daily Loss Keep
+TP1% Keep (put 60% Default)
+TP2% Keep (put 30% Default)
+TP3% Keep (put 10% Default)
+TP1 R Keep (put 1 default)
+TP2 R Keep (put 2 default)
+TP3 R Keep (put 3 default)
+TSL Enabled (hide, default disabled)
+TSL R Trigger Hide
+TSL R Distance HIDE
+Default Stop Loss Hide
+Default SL Mode (HIDE, default PRICE)
+MAx Positive Trades (show, default 2)
+Max negative Trades (show , default 1)
+Max active trades (show, default 1)
+Ports Active (hide, default O)
+Port 1 ( hide)
+POrt 2 (hide)
+port 3 (hide)
+port 4 (hide)
+Jsons SL Format (hide)
