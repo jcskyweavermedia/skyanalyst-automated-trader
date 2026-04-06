@@ -306,6 +306,7 @@ namespace cAlgo.Robots
         private readonly string _accountName;
         private readonly RiskModeType _riskMode;
         private readonly int _webhookPort;
+        private readonly string _instrumentDisplay;
         private BotModeType _botMode;
         private bool _webhookServerError;
 
@@ -313,6 +314,7 @@ namespace cAlgo.Robots
         private StackPanel _contentPanel;
 
         private TextBlock _accountText;
+        private TextBlock _instrumentText;
         private TextBlock _riskModeText;
         private TextBlock _portText;
         private TextBlock _portStatusText;
@@ -324,7 +326,8 @@ namespace cAlgo.Robots
             RiskModeType riskMode,
             int webhookPort,
             BotModeType botMode,
-            bool webhookServerError)
+            bool webhookServerError,
+            string instrumentDisplay)
         {
             _bot = bot;
             _accountName = accountName;
@@ -332,6 +335,7 @@ namespace cAlgo.Robots
             _webhookPort = webhookPort;
             _botMode = botMode;
             _webhookServerError = webhookServerError;
+            _instrumentDisplay = instrumentDisplay;
 
             AddChild(CreateCard());
         }
@@ -356,6 +360,14 @@ namespace cAlgo.Robots
                 Margin = "0 0 0 2"
             };
             _contentPanel.AddChild(_accountText);
+
+            _instrumentText = new TextBlock
+            {
+                Text = $"Instrument: {_instrumentDisplay}",
+                FontSize = 9,
+                Margin = "0 2 0 2"
+            };
+            _contentPanel.AddChild(_instrumentText);
 
             _riskModeText = new TextBlock
             {
@@ -608,15 +620,87 @@ namespace cAlgo.Robots
                 _botDisabled = true;
                 PrintLocal("Bot Disabled - No instrument selected");
 
-                var disabledLabel = new TextBlock
+                var disabledPanel = new StackPanel
                 {
-                    Text = "Bot Disabled\nChoose instrument in settings",
-                    ForegroundColor = Color.FromHex("#FF4444"),
-                    FontSize = 18,
+                    Orientation = Orientation.Vertical,
                     HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
+                    Width = 280
                 };
-                Chart.AddControl(disabledLabel);
+
+                // Title bar
+                var titleBar = new Border
+                {
+                    BackgroundColor = Color.FromHex("#CC3333"),
+                    CornerRadius = new CornerRadius(5, 5, 0, 0),
+                    Padding = new Thickness(0, 8, 0, 8),
+                    HorizontalAlignment = HorizontalAlignment.Stretch
+                };
+                titleBar.Child = new TextBlock
+                {
+                    Text = "SkyAnalyst Automated Trader Lite",
+                    ForegroundColor = Color.White,
+                    FontSize = 11,
+                    FontWeight = FontWeight.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center
+                };
+                disabledPanel.AddChild(titleBar);
+
+                // Body
+                var bodyBorder = new Border
+                {
+                    BackgroundColor = Color.FromHex("#292929"),
+                    CornerRadius = new CornerRadius(0, 0, 5, 5),
+                    BorderColor = Color.FromHex("#3C3C3C"),
+                    BorderThickness = new Thickness(1, 0, 1, 1),
+                    Padding = new Thickness(20, 15, 20, 15),
+                    HorizontalAlignment = HorizontalAlignment.Stretch
+                };
+
+                var bodyStack = new StackPanel
+                {
+                    Orientation = Orientation.Vertical,
+                    HorizontalAlignment = HorizontalAlignment.Center
+                };
+
+                bodyStack.AddChild(new TextBlock
+                {
+                    Text = "Bot Disabled",
+                    ForegroundColor = Color.FromHex("#FF6666"),
+                    FontSize = 16,
+                    FontWeight = FontWeight.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = "0 0 0 8"
+                });
+
+                bodyStack.AddChild(new TextBlock
+                {
+                    Text = "No instrument selected.",
+                    ForegroundColor = Color.FromHex("#AAAAAA"),
+                    FontSize = 11,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = "0 0 0 4"
+                });
+
+                bodyStack.AddChild(new TextBlock
+                {
+                    Text = "Choose instrument in settings to start.",
+                    ForegroundColor = Color.FromHex("#AAAAAA"),
+                    FontSize = 11,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = "0 0 0 0"
+                });
+
+                bodyBorder.Child = bodyStack;
+                disabledPanel.AddChild(bodyBorder);
+
+                var wrapper = new Border
+                {
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = "0 0 0 20"
+                };
+                wrapper.Child = disabledPanel;
+                Chart.AddControl(wrapper);
                 return;
             }
 
@@ -731,13 +815,17 @@ namespace cAlgo.Robots
 
             if (StatusCardVisibility == StatusCardVisibility.Displayed)
             {
+                string instrumentDisplay = SymbolFilter == SymbolFilterOption.Choose_Your_Instrument
+                    ? "N/A"
+                    : ExtractBaseSymbol(SymbolFilter.ToString().Replace("_", "-"));
                 _statusCard = new StatusCard(
                     this,
                     AccountName,
                     RiskMode,
                     WebhookPort,
                     BotMode,
-                    _webhookServerError
+                    _webhookServerError,
+                    instrumentDisplay
                 );
 
                 var statusBorder = new Border
