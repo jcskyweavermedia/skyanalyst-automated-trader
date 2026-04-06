@@ -95,7 +95,7 @@ namespace cAlgo.Robots
         US30_CASH_FTMO,
         US500_CASH_FTMO,
         US100_CASH_FTMO,
-        Accept_Any
+        Choose_Your_Instrument
     }
 
     public enum RiskModeType
@@ -459,7 +459,7 @@ namespace cAlgo.Robots
         [Parameter("Port Enabled", Group = "Trading Bridge Settings", DefaultValue = true)]
         public bool WebhookEnabled { get; set; }
 
-        [Parameter("Symbol", Group = "Trading Bridge Settings", DefaultValue = SymbolFilterOption.Accept_Any)]
+        [Parameter("Symbol", Group = "Trading Bridge Settings", DefaultValue = SymbolFilterOption.Choose_Your_Instrument)]
         public SymbolFilterOption SymbolFilter { get; set; }
 
         [Parameter("SL Zone Preference", Group = "Trading Bridge Settings", DefaultValue = SLZonePreference.Wide)]
@@ -467,6 +467,9 @@ namespace cAlgo.Robots
 
         [Parameter("TP Zone Preference", Group = "Trading Bridge Settings", DefaultValue = TPZonePreference.Full)]
         public TPZonePreference TPZonePreference { get; set; }
+
+        [Parameter("SL/TP Offset (pips)", Group = "Trading Bridge Settings", DefaultValue = 0.0)]
+        public double SLTPOffsetPips { get; set; }
         // -----------------------------------------------------------------------
 
         // ------------------------ "Risk Mode" ------------------------
@@ -606,8 +609,11 @@ namespace cAlgo.Robots
         private HttpListener _webhookListener;
         private StatusCard _statusCard;
         private bool _webhookServerError = false;
+        private bool _botDisabled = false;
         private int _webhookStartAttempts = 0;
         private const int MAX_WEBHOOK_ATTEMPTS = 3;
+        private const int WEBHOOK_RETRY_INTERVAL_SECONDS = 10;
+        private DateTime _lastWebhookRetryTime = DateTime.MinValue;
         private string _labelPrefix;
         private double _actualStartingBalance;
         private double _effectiveStartingBalance;
@@ -643,6 +649,24 @@ namespace cAlgo.Robots
             }
 
             var nowLocalEcu = TimeZoneInfo.ConvertTimeFromUtc(Server.TimeInUtc, _ecuadorTimeZone);
+
+            // Block startup if no instrument is selected
+            if (SymbolFilter == SymbolFilterOption.Choose_Your_Instrument && BotMode == BotModeType.Auto)
+            {
+                _botDisabled = true;
+                PrintLocal("Bot Disabled - No instrument selected");
+
+                var disabledLabel = new TextBlock
+                {
+                    Text = "Bot Disabled\nChoose instrument in settings",
+                    ForegroundColor = Color.FromHex("#FF4444"),
+                    FontSize = 18,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Chart.AddControl(disabledLabel);
+                return;
+            }
 
             _labelPrefix = AccountName + "_";
 
@@ -779,9 +803,12 @@ namespace cAlgo.Robots
 
         protected override void OnTick()
         {
-            // Retry webhook start if needed
-            if (WebhookEnabled && BotMode == BotModeType.Auto && _webhookServerError && 
-                _webhookStartAttempts > 0 && _webhookStartAttempts < MAX_WEBHOOK_ATTEMPTS)
+            if (_botDisabled)
+                return;
+
+            // Retry webhook start if needed (with cooldown to avoid hammering)
+            if (WebhookEnabled && BotMode == BotModeType.Auto && _webhookServerError &&
+                (DateTime.UtcNow - _lastWebhookRetryTime).TotalSeconds >= WEBHOOK_RETRY_INTERVAL_SECONDS)
             {
                 TryStartWebhookServer();
             }
@@ -797,27 +824,8 @@ namespace cAlgo.Robots
         {
             try
             {
-                if (_webhookListener != null)
-                {
-                    try
-                    {
-                        if (_webhookListener.IsListening)
-                        {
-                            _webhookListener.Stop();
-                        }
-                        _webhookListener.Close();
-                        ((IDisposable)_webhookListener).Dispose();
-                        PrintLocal("[WEBHOOK-SERVER] Stopped");
-                    }
-                    catch (Exception ex)
-                    {
-                        PrintLocal($"[WEBHOOK-SERVER] Error during shutdown: {ex.Message}");
-                    }
-                    finally
-                    {
-                        _webhookListener = null;
-                    }
-                }
+                DisposeWebhookListener();
+                PrintLocal("[WEBHOOK-SERVER] Stopped");
             }
             catch (Exception ex)
             {
@@ -828,8 +836,31 @@ namespace cAlgo.Robots
             PrintLocal("Bot stopped.");
         }
 
+        private void DisposeWebhookListener()
+        {
+            if (_webhookListener != null)
+            {
+                try
+                {
+                    if (_webhookListener.IsListening)
+                        _webhookListener.Stop();
+                    _webhookListener.Close();
+                    ((IDisposable)_webhookListener).Dispose();
+                }
+                catch { }
+                finally
+                {
+                    _webhookListener = null;
+                }
+            }
+        }
+
         private void TryStartWebhookServer()
         {
+            _lastWebhookRetryTime = DateTime.UtcNow;
+
+            DisposeWebhookListener();
+
             try
             {
                 _webhookListener = new HttpListener();
@@ -839,26 +870,19 @@ namespace cAlgo.Robots
                 _webhookServerError = false;
                 _webhookStartAttempts = 0;
                 PrintLocal($"[WEBHOOK-SERVER] Started successfully on port {WebhookPort}");
-                
+
                 if (_statusCard != null)
                 {
                     _statusCard.RefreshPortStatus(_webhookServerError);
                 }
             }
-            catch (HttpListenerException ex)
+            catch (HttpListenerException)
             {
                 _webhookServerError = true;
                 _webhookStartAttempts++;
-                
-                if (_webhookStartAttempts < MAX_WEBHOOK_ATTEMPTS)
-                {
-                    PrintLocal($"[WEBHOOK-SERVER] Port {WebhookPort} in use, will retry (attempt {_webhookStartAttempts}/{MAX_WEBHOOK_ATTEMPTS})");
-                }
-                else
-                {
-                    PrintLocal($"[WEBHOOK-SERVER] Failed after {MAX_WEBHOOK_ATTEMPTS} attempts: {ex.Message}");
-                }
-                
+
+                PrintLocal($"[WEBHOOK-SERVER] Port {WebhookPort} in use, will retry in {WEBHOOK_RETRY_INTERVAL_SECONDS}s (attempt {_webhookStartAttempts})");
+
                 if (_statusCard != null)
                 {
                     _statusCard.RefreshPortStatus(_webhookServerError);
@@ -867,9 +891,9 @@ namespace cAlgo.Robots
             catch (Exception ex)
             {
                 _webhookServerError = true;
-                _webhookStartAttempts = MAX_WEBHOOK_ATTEMPTS;
-                PrintLocal($"[WEBHOOK-SERVER] Failed to start: {ex.Message}");
-                
+                _webhookStartAttempts++;
+                PrintLocal($"[WEBHOOK-SERVER] Failed to start: {ex.Message} — will retry in {WEBHOOK_RETRY_INTERVAL_SECONDS}s");
+
                 if (_statusCard != null)
                 {
                     _statusCard.RefreshPortStatus(_webhookServerError);
@@ -998,8 +1022,8 @@ namespace cAlgo.Robots
 
         private bool PassesSymbolFilter(string webhookInstrument)
         {
-            if (SymbolFilter == SymbolFilterOption.Accept_Any)
-                return true;
+            if (SymbolFilter == SymbolFilterOption.Choose_Your_Instrument)
+                return false;
 
             string filterSymbol = SymbolFilter.ToString().Replace("_", "-");
             string baseSymbol = ExtractBaseSymbol(webhookInstrument);
@@ -1137,6 +1161,22 @@ namespace cAlgo.Robots
                 double tp1Price = GetTakeProfitPrice(webhook.TP1, webhook.Direction);
                 double tp2Price = GetTakeProfitPrice(webhook.TP2, webhook.Direction);
                 double tp3Price = GetTakeProfitPrice(webhook.TP3, webhook.Direction);
+
+                // Apply SL/TP offset if configured
+                if (SLTPOffsetPips != 0)
+                {
+                    double offsetPrice = SLTPOffsetPips * Symbol.PipSize;
+                    // Positive offset = widen (SL further from entry, TPs further from entry)
+                    double slSign = (tradeType == TradeType.Buy) ? -1 : 1;
+                    double tpSign = (tradeType == TradeType.Buy) ? 1 : -1;
+
+                    slPrice += offsetPrice * slSign;
+                    tp1Price += offsetPrice * tpSign;
+                    if (tp2Price > 0) tp2Price += offsetPrice * tpSign;
+                    if (tp3Price > 0) tp3Price += offsetPrice * tpSign;
+
+                    PrintLocal($"[WEBHOOK] Applied {SLTPOffsetPips:+0.0;-0.0} pip offset to SL/TP prices");
+                }
 
                 if (slPrice <= 0 || tp1Price <= 0)
                     return;
