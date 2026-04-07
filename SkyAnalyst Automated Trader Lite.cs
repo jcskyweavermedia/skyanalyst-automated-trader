@@ -76,26 +76,20 @@ namespace cAlgo.Robots
 
     public enum SymbolFilterOption
     {
+        Choose_Your_Instrument,
+        NAS100_Pepperstone,
         US30_Pepperstone,
         US500_Pepperstone,
-        NAS100_Pepperstone,
-        XAUUSD_Pepperstone,
-        XAGUSD_Pepperstone,
+        XAUUSD,
+        AUDUSD,
+        BTCUSD,
         EURUSD,
         GBPUSD,
-        USDJPY,
-        AUDUSD,
         USDCAD,
-        NZDUSD,
-        USDCHF,
-        EURGBP,
-        EURJPY,
-        GBPJPY,
-        BTCUSD,
-        US30_CASH_FTMO,
-        US500_CASH_FTMO,
+        USDJPY,
         US100_CASH_FTMO,
-        Choose_Your_Instrument
+        US30_CASH_FTMO,
+        US500_CASH_FTMO
     }
 
     public enum RiskModeType
@@ -464,9 +458,6 @@ namespace cAlgo.Robots
         public string AccountName { get; set; }
 
         // ------------------------ "Trading Bridge Settings" ------------------------
-        [Parameter("Listening Port", Group = "Trading Bridge Settings", DefaultValue = 8050)]
-        public int WebhookPort { get; set; }
-
         [Parameter("Symbol", Group = "Trading Bridge Settings", DefaultValue = SymbolFilterOption.Choose_Your_Instrument)]
         public SymbolFilterOption SymbolFilter { get; set; }
 
@@ -528,6 +519,46 @@ namespace cAlgo.Robots
         [Parameter("Disclaimer", Group = "⚠️ For Educational Purposes Only", DefaultValue = "This bot is for educational and testing purposes only. Use at your own risk.")]
         public string Disclaimer { get; set; }
 
+        // ------------------------ "Custom Port Overrides" ------------------------
+        [Parameter("US30 Port", Group = "Custom Port Overrides", DefaultValue = 8050)]
+        public int US30PortOverride { get; set; }
+
+        [Parameter("NAS100 Port", Group = "Custom Port Overrides", DefaultValue = 8051)]
+        public int NAS100PortOverride { get; set; }
+
+        [Parameter("US500 Port", Group = "Custom Port Overrides", DefaultValue = 8052)]
+        public int US500PortOverride { get; set; }
+
+        [Parameter("XAUUSD Port", Group = "Custom Port Overrides", DefaultValue = 8053)]
+        public int XAUUSDPortOverride { get; set; }
+
+        [Parameter("EURUSD Port", Group = "Custom Port Overrides", DefaultValue = 8054)]
+        public int EURUSDPortOverride { get; set; }
+
+        [Parameter("USDJPY Port", Group = "Custom Port Overrides", DefaultValue = 8055)]
+        public int USDJPYPortOverride { get; set; }
+
+        [Parameter("BTCUSD Port", Group = "Custom Port Overrides", DefaultValue = 8056)]
+        public int BTCUSDPortOverride { get; set; }
+
+        [Parameter("AUDUSD Port", Group = "Custom Port Overrides", DefaultValue = 8057)]
+        public int AUDUSDPortOverride { get; set; }
+
+        [Parameter("USDCAD Port", Group = "Custom Port Overrides", DefaultValue = 8058)]
+        public int USDCADPortOverride { get; set; }
+
+        [Parameter("GBPUSD Port", Group = "Custom Port Overrides", DefaultValue = 8059)]
+        public int GBPUSDPortOverride { get; set; }
+
+        [Parameter("US30 FTMO Port", Group = "Custom Port Overrides", DefaultValue = 8060)]
+        public int US30FTMOPortOverride { get; set; }
+
+        [Parameter("US500 FTMO Port", Group = "Custom Port Overrides", DefaultValue = 8061)]
+        public int US500FTMOPortOverride { get; set; }
+
+        [Parameter("US100 FTMO Port", Group = "Custom Port Overrides", DefaultValue = 8062)]
+        public int US100FTMOPortOverride { get; set; }
+
         // ======================== HIDDEN (HARDCODED) SETTINGS ========================
         public StatusCardVisibility StatusCardVisibility = StatusCardVisibility.Displayed;
         public bool WebhookEnabled = true;
@@ -578,25 +609,39 @@ namespace cAlgo.Robots
         private const int MAX_WEBHOOK_ATTEMPTS = 3;
         private const int WEBHOOK_RETRY_INTERVAL_SECONDS = 10;
         private DateTime _lastWebhookRetryTime = DateTime.MinValue;
+        private int WebhookPort;
         private string _labelPrefix;
         private double _actualStartingBalance;
         private double _effectiveStartingBalance;
+
+        private static readonly Dictionary<SymbolFilterOption, int> _defaultPortMappings = new Dictionary<SymbolFilterOption, int>
+        {
+            { SymbolFilterOption.US30_Pepperstone, 8050 },
+            { SymbolFilterOption.NAS100_Pepperstone, 8051 },
+            { SymbolFilterOption.US500_Pepperstone, 8052 },
+            { SymbolFilterOption.XAUUSD, 8053 },
+            { SymbolFilterOption.EURUSD, 8054 },
+            { SymbolFilterOption.USDJPY, 8055 },
+            { SymbolFilterOption.BTCUSD, 8056 },
+            { SymbolFilterOption.AUDUSD, 8057 },
+            { SymbolFilterOption.USDCAD, 8058 },
+            { SymbolFilterOption.GBPUSD, 8059 },
+            { SymbolFilterOption.US30_CASH_FTMO, 8060 },
+            { SymbolFilterOption.US500_CASH_FTMO, 8061 },
+            { SymbolFilterOption.US100_CASH_FTMO, 8062 },
+        };
+
         private Dictionary<string, string> _symbolMappings = new Dictionary<string, string>
         {
             { "US30-Pepperstone", "US30" },
+            { "US500-Pepperstone", "US500" },
             { "NAS100-Pepperstone", "NAS100" },
             { "XAUUSD-Pepperstone", "XAUUSD" },
-            { "XAGUSD-Pepperstone", "XAGUSD" },
             { "EURUSD-Pepperstone", "EURUSD" },
             { "GBPUSD-Pepperstone", "GBPUSD" },
             { "USDJPY-Pepperstone", "USDJPY" },
             { "AUDUSD-Pepperstone", "AUDUSD" },
             { "USDCAD-Pepperstone", "USDCAD" },
-            { "NZDUSD-Pepperstone", "NZDUSD" },
-            { "USDCHF-Pepperstone", "USDCHF" },
-            { "EURGBP-Pepperstone", "EURGBP" },
-            { "EURJPY-Pepperstone", "EURJPY" },
-            { "GBPJPY-Pepperstone", "GBPJPY" },
             { "BTCUSD-Pepperstone", "BTCUSD" }
         };
 
@@ -613,6 +658,9 @@ namespace cAlgo.Robots
             }
 
             var nowLocalEcu = TimeZoneInfo.ConvertTimeFromUtc(Server.TimeInUtc, _ecuadorTimeZone);
+
+            // Resolve webhook port: custom override > default mapping > fallback 8050
+            WebhookPort = ResolveWebhookPort();
 
             // Block startup if no instrument is selected
             if (SymbolFilter == SymbolFilterOption.Choose_Your_Instrument && BotMode == BotModeType.Auto)
@@ -1089,6 +1137,36 @@ namespace cAlgo.Robots
             }
 
             return basePart;
+        }
+
+        private int ResolveWebhookPort()
+        {
+            int port = GetCustomPortOverride();
+            if (port > 0)
+                return port;
+
+            return 8050;
+        }
+
+        private int GetCustomPortOverride()
+        {
+            switch (SymbolFilter)
+            {
+                case SymbolFilterOption.US30_Pepperstone: return US30PortOverride;
+                case SymbolFilterOption.NAS100_Pepperstone: return NAS100PortOverride;
+                case SymbolFilterOption.US500_Pepperstone: return US500PortOverride;
+                case SymbolFilterOption.XAUUSD: return XAUUSDPortOverride;
+                case SymbolFilterOption.EURUSD: return EURUSDPortOverride;
+                case SymbolFilterOption.USDJPY: return USDJPYPortOverride;
+                case SymbolFilterOption.BTCUSD: return BTCUSDPortOverride;
+                case SymbolFilterOption.AUDUSD: return AUDUSDPortOverride;
+                case SymbolFilterOption.USDCAD: return USDCADPortOverride;
+                case SymbolFilterOption.GBPUSD: return GBPUSDPortOverride;
+                case SymbolFilterOption.US30_CASH_FTMO: return US30FTMOPortOverride;
+                case SymbolFilterOption.US500_CASH_FTMO: return US500FTMOPortOverride;
+                case SymbolFilterOption.US100_CASH_FTMO: return US100FTMOPortOverride;
+                default: return 0;
+            }
         }
 
         private string MapSymbolToMT(string webhookInstrument)
