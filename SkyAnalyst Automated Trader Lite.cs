@@ -1,6 +1,6 @@
 /*
  * ================================================================================
- * SkyAnalyst Automated Trader Lite
+ * SkyAnalyst Automated Trader Lite v1.1
  * ================================================================================
  * 
  * Copyright © 2025 SkyAnalyst AI LLC
@@ -1234,6 +1234,7 @@ namespace cAlgo.Robots
             out double pos1Volume,
             out double pos2Volume,
             out double pos3Volume,
+            bool hasTP2,
             bool hasTP3)
         {
             double riskAmount = CalculateRiskAmount(slDistancePips);
@@ -1244,27 +1245,26 @@ namespace cAlgo.Robots
             if (totalVolume < Symbol.VolumeInUnitsMin)
                 totalVolume = Symbol.VolumeInUnitsMin;
 
-            if (hasTP3)
-            {
-                pos1Volume = totalVolume * (TP1Percent / 100.0);
-                pos2Volume = totalVolume * (TP2Percent / 100.0);
-                pos3Volume = totalVolume * (TP3Percent / 100.0);
-            }
-            else
-            {
-                double total12 = TP1Percent + TP2Percent;
-                pos1Volume = totalVolume * (TP1Percent / total12);
-                pos2Volume = totalVolume * (TP2Percent / total12);
-                pos3Volume = 0;
-            }
+            // Calculate the sum of active TP percentages for redistribution
+            double activePercentSum = TP1Percent
+                + (hasTP2 ? TP2Percent : 0)
+                + (hasTP3 ? TP3Percent : 0);
+
+            if (activePercentSum <= 0)
+                activePercentSum = 100.0;
+
+            pos1Volume = totalVolume * (TP1Percent / activePercentSum);
+            pos2Volume = hasTP2 ? totalVolume * (TP2Percent / activePercentSum) : 0;
+            pos3Volume = hasTP3 ? totalVolume * (TP3Percent / activePercentSum) : 0;
 
             pos1Volume = Symbol.NormalizeVolumeInUnits(pos1Volume, RoundingMode.ToNearest);
-            pos2Volume = Symbol.NormalizeVolumeInUnits(pos2Volume, RoundingMode.ToNearest);
+            if (hasTP2)
+                pos2Volume = Symbol.NormalizeVolumeInUnits(pos2Volume, RoundingMode.ToNearest);
             if (hasTP3)
                 pos3Volume = Symbol.NormalizeVolumeInUnits(pos3Volume, RoundingMode.ToNearest);
 
             if (pos1Volume < Symbol.VolumeInUnitsMin) pos1Volume = Symbol.VolumeInUnitsMin;
-            if (pos2Volume < Symbol.VolumeInUnitsMin) pos2Volume = Symbol.VolumeInUnitsMin;
+            if (hasTP2 && pos2Volume < Symbol.VolumeInUnitsMin) pos2Volume = Symbol.VolumeInUnitsMin;
             if (hasTP3 && pos3Volume < Symbol.VolumeInUnitsMin) pos3Volume = Symbol.VolumeInUnitsMin;
         }
 
@@ -1303,19 +1303,21 @@ namespace cAlgo.Robots
                 if (slDistancePips <= 0)
                     return;
 
-                bool hasTP3 = (webhook.TP3 != null && tp3Price > 0);
+                bool hasTP2 = TP2Percent > 0 && tp2Price > 0;
+                bool hasTP3 = TP3Percent > 0 && webhook.TP3 != null && tp3Price > 0;
                 double tp1DistancePips = CalculateSLDistanceInPips(currentPrice, tp1Price, tradeType);
-                double tp2DistancePips = tp2Price > 0 ? CalculateSLDistanceInPips(currentPrice, tp2Price, tradeType) : 0;
+                double tp2DistancePips = hasTP2 ? CalculateSLDistanceInPips(currentPrice, tp2Price, tradeType) : 0;
                 double tp3DistancePips = hasTP3 ? CalculateSLDistanceInPips(currentPrice, tp3Price, tradeType) : 0;
 
                 // Log acceptance with key details
                 PrintLocal($"[WEBHOOK] Accepted: {webhook.Direction} {webhook.Instrument} | TradeID: {webhook.TradeId} | " +
-                          $"SL: {slPrice:F5}, TP1: {tp1Price:F5}, TP2: {tp2Price:F5}" +
+                          $"SL: {slPrice:F5}, TP1: {tp1Price:F5}" +
+                          (hasTP2 ? $", TP2: {tp2Price:F5}" : "") +
                           (hasTP3 ? $", TP3: {tp3Price:F5}" : "") +
                           $" | Confidence: {webhook.Confidence}%");
 
                 double pos1, pos2, pos3;
-                CalculateWebhookPositionSizes(slDistancePips, out pos1, out pos2, out pos3, hasTP3);
+                CalculateWebhookPositionSizes(slDistancePips, out pos1, out pos2, out pos3, hasTP2, hasTP3);
 
                 var positionIds = new List<long>();
                 double riskPercent = GetCurrentRiskPercent();
@@ -1333,14 +1335,17 @@ namespace cAlgo.Robots
                 {
                     // Use exact price levels from webhook
                     PrintLocal($"[WEBHOOK] Using exact price mode for SL/TP");
-                    
+
                     var result1 = ExecuteMarketOrderWithExactPrices(tradeType, SymbolName, pos1, label1, slPrice, tp1Price);
                     if (result1.IsSuccessful)
                         positionIds.Add(result1.Position.Id);
 
-                    var result2 = ExecuteMarketOrderWithExactPrices(tradeType, SymbolName, pos2, label2, slPrice, tp2Price);
-                    if (result2.IsSuccessful)
-                        positionIds.Add(result2.Position.Id);
+                    if (hasTP2)
+                    {
+                        var result2 = ExecuteMarketOrderWithExactPrices(tradeType, SymbolName, pos2, label2, slPrice, tp2Price);
+                        if (result2.IsSuccessful)
+                            positionIds.Add(result2.Position.Id);
+                    }
 
                     if (hasTP3)
                     {
@@ -1353,18 +1358,21 @@ namespace cAlgo.Robots
                 {
                     // Use pip distance mode (legacy behavior)
                     PrintLocal($"[WEBHOOK] Using pip distance mode for SL/TP");
-                    
+
 #pragma warning disable 0618
                     var result1 = ExecuteMarketOrder(tradeType, SymbolName, pos1, label1, slDistancePips, tp1DistancePips);
 #pragma warning restore 0618
                     if (result1.IsSuccessful)
                         positionIds.Add(result1.Position.Id);
 
+                    if (hasTP2)
+                    {
 #pragma warning disable 0618
-                    var result2 = ExecuteMarketOrder(tradeType, SymbolName, pos2, label2, slDistancePips, tp2DistancePips);
+                        var result2 = ExecuteMarketOrder(tradeType, SymbolName, pos2, label2, slDistancePips, tp2DistancePips);
 #pragma warning restore 0618
-                    if (result2.IsSuccessful)
-                        positionIds.Add(result2.Position.Id);
+                        if (result2.IsSuccessful)
+                            positionIds.Add(result2.Position.Id);
+                    }
 
                     if (hasTP3)
                     {
@@ -1384,7 +1392,9 @@ namespace cAlgo.Robots
 
                 // Broadcast webhook trade to receivers with TP/SL levels
                 string action = (tradeType == TradeType.Buy) ? "Buy" : "Sell";
-                SendJsonMessage(action, slDistancePips, slPrice, tp1Price, tp2Price, tp3Price, hasTP3, SymbolName, JsonSLFormat);
+                SendJsonMessage(action, slDistancePips, slPrice, tp1Price,
+                    hasTP2 ? tp2Price : 0, hasTP3 ? tp3Price : 0,
+                    hasTP3, SymbolName, JsonSLFormat);
 
                 // Log execution result
                 PrintLocal($"[WEBHOOK] Executed: {positionIds.Count} position(s) opened (IDs: {string.Join(", ", positionIds)}) | " +
@@ -1604,22 +1614,31 @@ namespace cAlgo.Robots
             double riskAmt = CalculateRiskAmount(finalDist);
             if (riskAmt <= 0) return;
 
+            bool hasTP2 = tp2Percent > 0;
+            bool hasTP3 = tp3Percent > 0;
+
             double volumeUnits = riskAmt / (finalDist * Symbol.PipValue);
             volumeUnits = Symbol.NormalizeVolumeInUnits(volumeUnits, RoundingMode.ToNearest);
             if (volumeUnits < Symbol.VolumeInUnitsMin)
                 volumeUnits = Symbol.VolumeInUnitsMin;
 
-            double pos1 = volumeUnits * (tp1Percent / 100.0);
-            double pos2 = volumeUnits * (tp2Percent / 100.0);
-            double pos3 = volumeUnits * (tp3Percent / 100.0);
+            // Redistribute volume only among active TPs
+            double activePercentSum = tp1Percent
+                + (hasTP2 ? tp2Percent : 0)
+                + (hasTP3 ? tp3Percent : 0);
+            if (activePercentSum <= 0) activePercentSum = 100.0;
+
+            double pos1 = volumeUnits * (tp1Percent / activePercentSum);
+            double pos2 = hasTP2 ? volumeUnits * (tp2Percent / activePercentSum) : 0;
+            double pos3 = hasTP3 ? volumeUnits * (tp3Percent / activePercentSum) : 0;
 
             pos1 = Symbol.NormalizeVolumeInUnits(pos1, RoundingMode.ToNearest);
-            pos2 = Symbol.NormalizeVolumeInUnits(pos2, RoundingMode.ToNearest);
-            pos3 = Symbol.NormalizeVolumeInUnits(pos3, RoundingMode.ToNearest);
+            if (hasTP2) pos2 = Symbol.NormalizeVolumeInUnits(pos2, RoundingMode.ToNearest);
+            if (hasTP3) pos3 = Symbol.NormalizeVolumeInUnits(pos3, RoundingMode.ToNearest);
 
             if (pos1 < Symbol.VolumeInUnitsMin) pos1 = Symbol.VolumeInUnitsMin;
-            if (pos2 < Symbol.VolumeInUnitsMin) pos2 = Symbol.VolumeInUnitsMin;
-            if (pos3 < Symbol.VolumeInUnitsMin) pos3 = Symbol.VolumeInUnitsMin;
+            if (hasTP2 && pos2 < Symbol.VolumeInUnitsMin) pos2 = Symbol.VolumeInUnitsMin;
+            if (hasTP3 && pos3 < Symbol.VolumeInUnitsMin) pos3 = Symbol.VolumeInUnitsMin;
 
             double tp1 = finalDist * tp1R;
             double tp2 = finalDist * tp2R;
@@ -1627,21 +1646,23 @@ namespace cAlgo.Robots
 
             // Use account-specific prefix for position isolation between bot instances
             ExecuteMarketOrderAsync(tradeType, SymbolName, pos1, $"{_labelPrefix}TP1", finalDist, tp1);
-            ExecuteMarketOrderAsync(tradeType, SymbolName, pos2, $"{_labelPrefix}TP2", finalDist, tp2);
-            ExecuteMarketOrderAsync(tradeType, SymbolName, pos3, $"{_labelPrefix}TP3", finalDist, tp3);
+            if (hasTP2)
+                ExecuteMarketOrderAsync(tradeType, SymbolName, pos2, $"{_labelPrefix}TP2", finalDist, tp2);
+            if (hasTP3)
+                ExecuteMarketOrderAsync(tradeType, SymbolName, pos3, $"{_labelPrefix}TP3", finalDist, tp3);
 
             // Calculate SL and TP prices for JSON message
             double currentPrice = (tradeType == TradeType.Buy) ? Symbol.Ask : Symbol.Bid;
-            double slPrice = (tradeType == TradeType.Buy) 
-                ? currentPrice - (finalDist * Symbol.PipSize) 
+            double slPrice = (tradeType == TradeType.Buy)
+                ? currentPrice - (finalDist * Symbol.PipSize)
                 : currentPrice + (finalDist * Symbol.PipSize);
-            
+
             double tp1Price = CalculateTPPrice(tradeType, currentPrice, tp1);
-            double tp2Price = CalculateTPPrice(tradeType, currentPrice, tp2);
-            double tp3Price = CalculateTPPrice(tradeType, currentPrice, tp3);
+            double tp2Price = hasTP2 ? CalculateTPPrice(tradeType, currentPrice, tp2) : 0;
+            double tp3Price = hasTP3 ? CalculateTPPrice(tradeType, currentPrice, tp3) : 0;
 
             string act = (tradeType == TradeType.Buy) ? "Buy" : "Sell";
-            SendJsonMessage(act, slPips, slPrice, tp1Price, tp2Price, tp3Price, true, SymbolName, JsonSLFormat);
+            SendJsonMessage(act, slPips, slPrice, tp1Price, tp2Price, tp3Price, hasTP3, SymbolName, JsonSLFormat);
 
             _manualPositionOpen = true;
             _manualTradeCumulativeProfit = 0;
@@ -2497,7 +2518,7 @@ namespace cAlgo.Robots
 
             var brandingText = new TextBlock
             {
-                Text = "SkyAnalyst Automated Trader Lite v1.0",
+                Text = "SkyAnalyst Automated Trader Lite v1.1",
                 FontSize = 10,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 Opacity = 0.6
