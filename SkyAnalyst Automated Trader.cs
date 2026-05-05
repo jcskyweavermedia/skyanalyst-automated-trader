@@ -522,13 +522,13 @@ namespace cAlgo.Robots
         [Parameter("Max Daily Loss (%)", Group = "Risk Reduction on Drawdown", DefaultValue = 5.0)]
         public double MaxDailyLoss { get; set; }
 
-        [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 60.0)]
+        [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 100.0)]
         public double TP1Percent { get; set; }
 
-        [Parameter("TP2 %", Group = "Trade Parameters", DefaultValue = 30.0)]
+        [Parameter("TP2 %", Group = "Trade Parameters", DefaultValue = 0.0)]
         public double TP2Percent { get; set; }
 
-        [Parameter("TP3 %", Group = "Trade Parameters", DefaultValue = 10.0)]
+        [Parameter("TP3 %", Group = "Trade Parameters", DefaultValue = 0.0)]
         public double TP3Percent { get; set; }
 
         [Parameter("TP1 R", Group = "Trade Parameters", DefaultValue = 1.0)]

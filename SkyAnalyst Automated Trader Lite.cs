@@ -1,6 +1,6 @@
 /*
  * ================================================================================
- * SkyAnalyst Automated Trader Lite v1.1
+ * SkyAnalyst Automated Trader Lite v1.3
  * ================================================================================
  * 
  * Copyright © 2025 SkyAnalyst AI LLC
@@ -116,6 +116,12 @@ namespace cAlgo.Robots
         Hidden
     }
 
+    public enum RiskTPSource
+    {
+        App,
+        Bot
+    }
+
     public class PriceZone
     {
         [JsonPropertyName("min")]
@@ -189,6 +195,21 @@ namespace cAlgo.Robots
 
         [JsonPropertyName("confidence")]
         public int? Confidence { get; set; }
+
+        [JsonPropertyName("risk")]
+        public double? Risk { get; set; }
+
+        [JsonPropertyName("risk_unit")]
+        public string RiskUnit { get; set; }
+
+        [JsonPropertyName("tp1_percent")]
+        public double? Tp1Percent { get; set; }
+
+        [JsonPropertyName("tp2_percent")]
+        public double? Tp2Percent { get; set; }
+
+        [JsonPropertyName("tp3_percent")]
+        public double? Tp3Percent { get; set; }
     }
 
     public class WebhookPayloadWrapper
@@ -427,11 +448,19 @@ namespace cAlgo.Robots
             }
         }
 
-        public void RefreshPortStatus(bool webhookServerError)
+        public void RefreshPortStatus(bool webhookServerError, bool permanentlyFailed = false)
         {
             _webhookServerError = webhookServerError;
-            _portStatusText.Text = _webhookServerError ? "Port Status: ⚠️ Error" : "Port Status: ✓ OK";
-            _portStatusText.ForegroundColor = _webhookServerError ? Color.Red : Color.Green;
+            if (permanentlyFailed)
+            {
+                _portStatusText.Text = "Port Status: ✗ FAILED — restart bot";
+                _portStatusText.ForegroundColor = Color.Red;
+            }
+            else
+            {
+                _portStatusText.Text = _webhookServerError ? "Port Status: ⚠️ Error" : "Port Status: ✓ OK";
+                _portStatusText.ForegroundColor = _webhookServerError ? Color.Red : Color.Green;
+            }
         }
 
         public void Show()
@@ -464,6 +493,12 @@ namespace cAlgo.Robots
         [Parameter("SL/TP Offset (pips)", Group = "Trading Bridge Settings", DefaultValue = 0.0)]
         public double SLTPOffsetPips { get; set; }
 
+        [Parameter("Risk Source", Group = "Trading Bridge Settings", DefaultValue = RiskTPSource.Bot)]
+        public RiskTPSource RiskSource { get; set; }
+
+        [Parameter("TP Source", Group = "Trading Bridge Settings", DefaultValue = RiskTPSource.Bot)]
+        public RiskTPSource TpSource { get; set; }
+
         // ------------------------ "Fixed Risk Settings" ------------------------
         [Parameter("Fixed Risk Unit", Group = "Fixed Risk Settings", DefaultValue = FixedRiskUnit.Percent)]
         public FixedRiskUnit FixedRiskUnit { get; set; }
@@ -482,13 +517,13 @@ namespace cAlgo.Robots
         public double MaxDailyLoss { get; set; }
 
         // ------------------------ "Trade Parameters" ------------------------
-        [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 60.0)]
+        [Parameter("TP1 %", Group = "Trade Parameters", DefaultValue = 100.0)]
         public double TP1Percent { get; set; }
 
-        [Parameter("TP2 %", Group = "Trade Parameters", DefaultValue = 30.0)]
+        [Parameter("TP2 %", Group = "Trade Parameters", DefaultValue = 0.0)]
         public double TP2Percent { get; set; }
 
-        [Parameter("TP3 %", Group = "Trade Parameters", DefaultValue = 10.0)]
+        [Parameter("TP3 %", Group = "Trade Parameters", DefaultValue = 0.0)]
         public double TP3Percent { get; set; }
 
         [Parameter("TP1 R", Group = "Trade Parameters", DefaultValue = 1.0)]
@@ -604,10 +639,13 @@ namespace cAlgo.Robots
         private HttpListener _webhookListener;
         private StatusCard _statusCard;
         private bool _webhookServerError = false;
+        private bool _webhookPermanentlyFailed = false;
         private bool _botDisabled = false;
         private int _webhookStartAttempts = 0;
-        private const int MAX_WEBHOOK_ATTEMPTS = 3;
-        private const int WEBHOOK_RETRY_INTERVAL_SECONDS = 10;
+        private const int MAX_WEBHOOK_ATTEMPTS = 5;
+        // Backoff schedule for webhook listener restart attempts. Index = _webhookStartAttempts.
+        // After MAX_WEBHOOK_ATTEMPTS the fuse blows in TryStartWebhookServer and OnTick stops retrying.
+        private static readonly int[] WEBHOOK_RETRY_BACKOFF_SECONDS = new[] { 10, 30, 60, 120, 300 };
         private DateTime _lastWebhookRetryTime = DateTime.MinValue;
         private int WebhookPort;
         private string _labelPrefix;
@@ -885,7 +923,7 @@ namespace cAlgo.Robots
                 statusBorder.Child = _statusCard;
                 Chart.AddControl(statusBorder);
                 
-                _statusCard.RefreshPortStatus(_webhookServerError);
+                _statusCard.RefreshPortStatus(_webhookServerError, _webhookPermanentlyFailed);
             }
         }
 
@@ -894,9 +932,11 @@ namespace cAlgo.Robots
             if (_botDisabled)
                 return;
 
-            // Retry webhook start if needed (with cooldown to avoid hammering)
+            // Retry webhook start if needed (with cooldown to avoid hammering).
+            // Stops retrying once _webhookPermanentlyFailed is set — user must restart bot.
             if (WebhookEnabled && BotMode == BotModeType.Auto && _webhookServerError &&
-                (DateTime.UtcNow - _lastWebhookRetryTime).TotalSeconds >= WEBHOOK_RETRY_INTERVAL_SECONDS)
+                !_webhookPermanentlyFailed &&
+                (DateTime.UtcNow - _lastWebhookRetryTime).TotalSeconds >= GetCurrentRetryIntervalSeconds())
             {
                 TryStartWebhookServer();
             }
@@ -943,6 +983,13 @@ namespace cAlgo.Robots
             }
         }
 
+        private int GetCurrentRetryIntervalSeconds()
+        {
+            int index = Math.Min(_webhookStartAttempts, WEBHOOK_RETRY_BACKOFF_SECONDS.Length - 1);
+            if (index < 0) index = 0;
+            return WEBHOOK_RETRY_BACKOFF_SECONDS[index];
+        }
+
         private void TryStartWebhookServer()
         {
             _lastWebhookRetryTime = DateTime.UtcNow;
@@ -957,48 +1004,110 @@ namespace cAlgo.Robots
                 _webhookListener.BeginGetContext(WebhookListenerCallback, _webhookListener);
                 _webhookServerError = false;
                 _webhookStartAttempts = 0;
+                _webhookPermanentlyFailed = false;
                 PrintLocal($"[WEBHOOK-SERVER] Started successfully on port {WebhookPort}");
 
                 if (_statusCard != null)
                 {
-                    _statusCard.RefreshPortStatus(_webhookServerError);
+                    _statusCard.RefreshPortStatus(_webhookServerError, _webhookPermanentlyFailed);
                 }
             }
-            catch (HttpListenerException)
+            catch (HttpListenerException ex)
             {
                 _webhookServerError = true;
                 _webhookStartAttempts++;
 
-                PrintLocal($"[WEBHOOK-SERVER] Port {WebhookPort} in use, will retry in {WEBHOOK_RETRY_INTERVAL_SECONDS}s (attempt {_webhookStartAttempts})");
+                if (_webhookStartAttempts >= MAX_WEBHOOK_ATTEMPTS)
+                {
+                    _webhookPermanentlyFailed = true;
+                    PrintLocal($"[WEBHOOK-SERVER] Permanently failed after {MAX_WEBHOOK_ATTEMPTS} attempts. Stop and Start the cBot in cTrader to retry. Last error: {ex.Message}");
+                }
+                else
+                {
+                    PrintLocal($"[WEBHOOK-SERVER] Port {WebhookPort} in use, will retry in {GetCurrentRetryIntervalSeconds()}s (attempt {_webhookStartAttempts})");
+                }
 
                 if (_statusCard != null)
                 {
-                    _statusCard.RefreshPortStatus(_webhookServerError);
+                    _statusCard.RefreshPortStatus(_webhookServerError, _webhookPermanentlyFailed);
                 }
             }
             catch (Exception ex)
             {
                 _webhookServerError = true;
                 _webhookStartAttempts++;
-                PrintLocal($"[WEBHOOK-SERVER] Failed to start: {ex.Message} — will retry in {WEBHOOK_RETRY_INTERVAL_SECONDS}s");
+
+                if (_webhookStartAttempts >= MAX_WEBHOOK_ATTEMPTS)
+                {
+                    _webhookPermanentlyFailed = true;
+                    PrintLocal($"[WEBHOOK-SERVER] Permanently failed after {MAX_WEBHOOK_ATTEMPTS} attempts. Stop and Start the cBot in cTrader to retry. Last error: {ex.Message}");
+                }
+                else
+                {
+                    PrintLocal($"[WEBHOOK-SERVER] Failed to start: {ex.Message} — will retry in {GetCurrentRetryIntervalSeconds()}s");
+                }
 
                 if (_statusCard != null)
                 {
-                    _statusCard.RefreshPortStatus(_webhookServerError);
+                    _statusCard.RefreshPortStatus(_webhookServerError, _webhookPermanentlyFailed);
                 }
             }
         }
 
         private void WebhookListenerCallback(IAsyncResult ar)
         {
-            if (_webhookListener == null || !_webhookListener.IsListening)
+            // Use the listener captured when BeginGetContext was registered (ar.AsyncState),
+            // not the field. The field may have been replaced or nulled by a concurrent
+            // dispose/restart cycle while this callback was in flight.
+            var listener = ar.AsyncState as HttpListener;
+            if (listener == null || !listener.IsListening)
                 return;
 
+            // 1. EndGetContext — failure here means the listener is dead. Listener-fatal: flip flag.
+            HttpListenerContext ctx;
             try
             {
-                HttpListenerContext ctx = _webhookListener.EndGetContext(ar);
-                _webhookListener.BeginGetContext(WebhookListenerCallback, _webhookListener);
+                ctx = listener.EndGetContext(ar);
+            }
+            catch (Exception ex)
+            {
+                _webhookServerError = true;
+                if (_statusCard != null)
+                {
+                    BeginInvokeOnMainThread(() => _statusCard.RefreshPortStatus(_webhookServerError, _webhookPermanentlyFailed));
+                }
+                PrintLocal($"[WEBHOOK-SERVER] EndGetContext failed: {ex.Message}");
+                return;
+            }
 
+            // 2. Re-arm BeginGetContext on the SAME listener instance, but only if the field
+            // still references this listener (no race with dispose/restart). Re-arm failure
+            // is also listener-fatal.
+            try
+            {
+                var current = _webhookListener;
+                if (ReferenceEquals(current, listener) && listener.IsListening)
+                {
+                    listener.BeginGetContext(WebhookListenerCallback, listener);
+                }
+                // else: a newer listener has taken over (or this one was disposed); silently exit
+                // the re-arm path. Do not flip _webhookServerError.
+            }
+            catch (Exception ex)
+            {
+                _webhookServerError = true;
+                if (_statusCard != null)
+                {
+                    BeginInvokeOnMainThread(() => _statusCard.RefreshPortStatus(_webhookServerError, _webhookPermanentlyFailed));
+                }
+                PrintLocal($"[WEBHOOK-SERVER] BeginGetContext re-arm failed: {ex.Message}");
+                // Fall through — we still have ctx and should attempt to handle the request below.
+            }
+
+            // 3. Body read + dispatch + response. Failures here are request-level, NOT listener-level.
+            // Best-effort 5xx, log, and continue. Do NOT touch _webhookServerError.
+            try
+            {
                 string body = ReadWebhookRequestBody(ctx);
                 BeginInvokeOnMainThread(() => HandleWebhookRequest(body));
 
@@ -1007,12 +1116,16 @@ namespace cAlgo.Robots
             }
             catch (Exception ex)
             {
-                _webhookServerError = true;
-                if (_statusCard != null)
+                PrintLocal($"[WEBHOOK-SERVER] Request-handling error (listener stays alive): {ex.Message}");
+                try
                 {
-                    BeginInvokeOnMainThread(() => _statusCard.RefreshPortStatus(_webhookServerError));
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.Close();
                 }
-                PrintLocal($"[WEBHOOK-SERVER] Listener callback error: {ex.Message}");
+                catch
+                {
+                    // Client likely disconnected; nothing to do.
+                }
             }
         }
 
@@ -1103,6 +1216,26 @@ namespace cAlgo.Robots
             {
                 errorMessage = "Trading blocked by risk management gates";
                 return false;
+            }
+
+            if (webhook.Risk.HasValue)
+            {
+                if (webhook.Risk.Value <= 0)
+                {
+                    errorMessage = "Webhook risk must be > 0";
+                    return false;
+                }
+                if (string.IsNullOrWhiteSpace(webhook.RiskUnit))
+                {
+                    errorMessage = "Webhook risk specified without risk_unit";
+                    return false;
+                }
+                if (!webhook.RiskUnit.Equals("percent", StringComparison.OrdinalIgnoreCase) &&
+                    !webhook.RiskUnit.Equals("dollar", StringComparison.OrdinalIgnoreCase))
+                {
+                    errorMessage = $"Webhook risk_unit must be 'percent' or 'dollar' (got '{webhook.RiskUnit}')";
+                    return false;
+                }
             }
 
             return true;
@@ -1231,14 +1364,16 @@ namespace cAlgo.Robots
 
         private void CalculateWebhookPositionSizes(
             double slDistancePips,
+            double riskAmount,
+            double tp1Percent,
+            double tp2Percent,
+            double tp3Percent,
             out double pos1Volume,
             out double pos2Volume,
             out double pos3Volume,
             bool hasTP2,
             bool hasTP3)
         {
-            double riskAmount = CalculateRiskAmount(slDistancePips);
-
             double totalVolume = riskAmount / (slDistancePips * Symbol.PipValue);
             totalVolume = Symbol.NormalizeVolumeInUnits(totalVolume, RoundingMode.ToNearest);
 
@@ -1246,16 +1381,16 @@ namespace cAlgo.Robots
                 totalVolume = Symbol.VolumeInUnitsMin;
 
             // Calculate the sum of active TP percentages for redistribution
-            double activePercentSum = TP1Percent
-                + (hasTP2 ? TP2Percent : 0)
-                + (hasTP3 ? TP3Percent : 0);
+            double activePercentSum = tp1Percent
+                + (hasTP2 ? tp2Percent : 0)
+                + (hasTP3 ? tp3Percent : 0);
 
             if (activePercentSum <= 0)
                 activePercentSum = 100.0;
 
-            pos1Volume = totalVolume * (TP1Percent / activePercentSum);
-            pos2Volume = hasTP2 ? totalVolume * (TP2Percent / activePercentSum) : 0;
-            pos3Volume = hasTP3 ? totalVolume * (TP3Percent / activePercentSum) : 0;
+            pos1Volume = totalVolume * (tp1Percent / activePercentSum);
+            pos2Volume = hasTP2 ? totalVolume * (tp2Percent / activePercentSum) : 0;
+            pos3Volume = hasTP3 ? totalVolume * (tp3Percent / activePercentSum) : 0;
 
             pos1Volume = Symbol.NormalizeVolumeInUnits(pos1Volume, RoundingMode.ToNearest);
             if (hasTP2)
@@ -1280,20 +1415,16 @@ namespace cAlgo.Robots
                 double tp2Price = GetTakeProfitPrice(webhook.TP2, webhook.Direction);
                 double tp3Price = GetTakeProfitPrice(webhook.TP3, webhook.Direction);
 
-                // Apply SL/TP offset if configured
+                // Apply SL/TP offset if configured — uniform price shift on all levels
                 if (SLTPOffsetPips != 0)
                 {
                     double offsetPrice = SLTPOffsetPips * Symbol.PipSize;
-                    // Positive offset = widen (SL further from entry, TPs further from entry)
-                    double slSign = (tradeType == TradeType.Buy) ? -1 : 1;
-                    double tpSign = (tradeType == TradeType.Buy) ? 1 : -1;
+                    slPrice += offsetPrice;
+                    tp1Price += offsetPrice;
+                    if (tp2Price > 0) tp2Price += offsetPrice;
+                    if (tp3Price > 0) tp3Price += offsetPrice;
 
-                    slPrice += offsetPrice * slSign;
-                    tp1Price += offsetPrice * tpSign;
-                    if (tp2Price > 0) tp2Price += offsetPrice * tpSign;
-                    if (tp3Price > 0) tp3Price += offsetPrice * tpSign;
-
-                    PrintLocal($"[WEBHOOK] Applied {SLTPOffsetPips:+0.0;-0.0} pip offset to SL/TP prices");
+                    PrintLocal($"[WEBHOOK] Applied {SLTPOffsetPips:+0.0;-0.0} pip uniform shift to SL/TP prices");
                 }
 
                 if (slPrice <= 0 || tp1Price <= 0)
@@ -1303,8 +1434,15 @@ namespace cAlgo.Robots
                 if (slDistancePips <= 0)
                     return;
 
-                bool hasTP2 = TP2Percent > 0 && tp2Price > 0;
-                bool hasTP3 = TP3Percent > 0 && webhook.TP3 != null && tp3Price > 0;
+                double effectiveTp1Percent = (TpSource == RiskTPSource.App && webhook.Tp1Percent.HasValue)
+                    ? webhook.Tp1Percent.Value : TP1Percent;
+                double effectiveTp2Percent = (TpSource == RiskTPSource.App && webhook.Tp2Percent.HasValue)
+                    ? webhook.Tp2Percent.Value : TP2Percent;
+                double effectiveTp3Percent = (TpSource == RiskTPSource.App && webhook.Tp3Percent.HasValue)
+                    ? webhook.Tp3Percent.Value : TP3Percent;
+
+                bool hasTP2 = effectiveTp2Percent > 0 && tp2Price > 0;
+                bool hasTP3 = effectiveTp3Percent > 0 && webhook.TP3 != null && tp3Price > 0;
                 double tp1DistancePips = CalculateSLDistanceInPips(currentPrice, tp1Price, tradeType);
                 double tp2DistancePips = hasTP2 ? CalculateSLDistanceInPips(currentPrice, tp2Price, tradeType) : 0;
                 double tp3DistancePips = hasTP3 ? CalculateSLDistanceInPips(currentPrice, tp3Price, tradeType) : 0;
@@ -1316,12 +1454,17 @@ namespace cAlgo.Robots
                           (hasTP3 ? $", TP3: {tp3Price:F5}" : "") +
                           $" | Confidence: {webhook.Confidence}%");
 
+                double effectiveRiskAmount =
+                    (RiskSource == RiskTPSource.App && webhook.Risk.HasValue)
+                        ? CalculateWebhookRiskAmount(webhook)
+                        : CalculateRiskAmount(slDistancePips);
+
                 double pos1, pos2, pos3;
-                CalculateWebhookPositionSizes(slDistancePips, out pos1, out pos2, out pos3, hasTP2, hasTP3);
+                CalculateWebhookPositionSizes(slDistancePips, effectiveRiskAmount,
+                    effectiveTp1Percent, effectiveTp2Percent, effectiveTp3Percent,
+                    out pos1, out pos2, out pos3, hasTP2, hasTP3);
 
                 var positionIds = new List<long>();
-                double riskPercent = GetCurrentRiskPercent();
-                double riskAmount = CalculateRiskAmount(slDistancePips);
                 double totalVolume = pos1 + pos2 + pos3;
 
                 // Create position labels with account prefix + trade ID for isolation
@@ -1397,8 +1540,13 @@ namespace cAlgo.Robots
                     hasTP3, SymbolName, JsonSLFormat);
 
                 // Log execution result
+                string riskSourceLabel = (RiskSource == RiskTPSource.App && webhook.Risk.HasValue) ? "App" : "Bot";
+                string tpSourceLabel = (TpSource == RiskTPSource.App &&
+                    (webhook.Tp1Percent.HasValue || webhook.Tp2Percent.HasValue || webhook.Tp3Percent.HasValue)) ? "App" : "Bot";
                 PrintLocal($"[WEBHOOK] Executed: {positionIds.Count} position(s) opened (IDs: {string.Join(", ", positionIds)}) | " +
-                          $"Risk: {riskPercent:F2}% (${riskAmount:F2}), Total: {totalVolume} units");
+                          $"Risk[{riskSourceLabel}]: ${effectiveRiskAmount:F2}, " +
+                          $"TP[{tpSourceLabel}]: {effectiveTp1Percent:F0}/{effectiveTp2Percent:F0}/{effectiveTp3Percent:F0}, " +
+                          $"Total: {totalVolume} units");
             }
             catch (Exception ex)
             {
@@ -2062,7 +2210,12 @@ namespace cAlgo.Robots
                     TP2 = data.TP2,
                     TP3 = data.TP3,
                     AiDecision = data.AiDecision,
-                    Confidence = data.Confidence
+                    Confidence = data.Confidence,
+                    Risk = data.Risk,
+                    RiskUnit = data.RiskUnit,
+                    Tp1Percent = data.Tp1Percent,
+                    Tp2Percent = data.Tp2Percent,
+                    Tp3Percent = data.Tp3Percent
                 };
 
                 if (string.IsNullOrEmpty(payload.Instrument) || string.IsNullOrEmpty(payload.Direction) ||
@@ -2138,6 +2291,15 @@ namespace cAlgo.Robots
             {
                 return FixedRiskDollar;
             }
+        }
+
+        private double CalculateWebhookRiskAmount(WebhookData webhook)
+        {
+            if (webhook.RiskUnit.Equals("percent", StringComparison.OrdinalIgnoreCase))
+            {
+                return Account.Balance * webhook.Risk.Value / 100.0;
+            }
+            return webhook.Risk.Value;
         }
 
         private double CalculateDynamicRiskAmount(double slDistancePips)
@@ -2245,7 +2407,7 @@ namespace cAlgo.Robots
                 var fullPath = Path.Combine(LogFolder, fileName);
 
                 Directory.CreateDirectory(LogFolder);
-                File.WriteAllLines(fullPath, _logs);
+                System.IO.File.WriteAllLines(fullPath, _logs);
 
                 Print($"{AccountName}: Logs saved => {fullPath}");
             }
@@ -2518,7 +2680,7 @@ namespace cAlgo.Robots
 
             var brandingText = new TextBlock
             {
-                Text = "SkyAnalyst Automated Trader Lite v1.1",
+                Text = "SkyAnalyst Automated Trader Lite v1.3",
                 FontSize = 10,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 Opacity = 0.6
